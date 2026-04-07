@@ -79,7 +79,7 @@ State: The state() method returns the internal Ground Truth DAG. This is strictl
 ### Reproducibility & Stability
 
 - Deterministic Seeds: Mention that world_gen.py uses a strictly isolated numpy.random.RandomState.
-- Evaluation Script: evaluate_stability.py is included. It verifies that across 100 iterations of a fixed seed, the score variance is σ=0.
+- Evaluation Script: evaluateStability.py is included. It verifies that across 100 iterations of a fixed seed, the score variance is σ=0.
 
 ## Why This Wins
 - Real-World Utility (30%): Models a high-value, professional task (Incident Response) using standard frameworks (MITRE ATT&CK).
