@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # ── Application source ────────────────────────────────────────────────────────
 COPY schema.py       .
-COPY world_gen.py    .
+COPY worldGen.py    .
 COPY env.py          .
 COPY grader.py       .
 COPY server.py       .
