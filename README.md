@@ -1,4 +1,4 @@
-# Post-Mortem
+# post-mortem
 
 > A Deterministic Benchmark for Forensic Attribution
 
@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-SHADOW_REGISTER is an OpenEnv-compliant environment simulating a post-breach investigation. The agent acts as a Forensic Analyst tasked with reconstructing a Kill Chain from raw artifacts. The environment evaluates an agent’s ability to perform multi-step relational reasoning across conflicting data sources, distinguishing between legitimate activity, system noise, and adversarial deception (timestomping/decoys).
+post-mortem is an OpenEnv-compliant environment simulating a post-breach investigation. The agent acts as a Forensic Analyst tasked with reconstructing a Kill Chain from raw artifacts. The environment evaluates an agent’s ability to perform multi-step relational reasoning across conflicting data sources, distinguishing between legitimate activity, system noise, and adversarial deception (timestomping/decoys).
 
 ## Environment Specification (OpenEnv)
 ### Observation Space (ForensicObs)
@@ -84,11 +84,4 @@ State: The state() method returns the internal Ground Truth DAG. This is strictl
 ## Why This Wins
 - Real-World Utility (30%): Models a high-value, professional task (Incident Response) using standard frameworks (MITRE ATT&CK).
 - Grader Quality (25%): Moves beyond string matching. Graders check if the agent understands the relationship between files (the "Chain").
-- Spec Compliance (15%): 100% OpenEnv compliant, Docker-ready, and lightweight enough to run on basic HF Space hardware.
-
-Implementation Roadmap (The 48-Hour Sprint) (rough)
-
-- Hour 0-12: Build the world_gen.py and the Truth DAG. This is your "Physics."
-- Hour 12-24: Implement the OpenEnv class (step, reset, state). Focus on the Search and Inspect logic.
-- Hour 24-36: Write the inference.py and the Task Graders. Run local tests with Llama-3/Qwen.
-- Hour 36-48: Dockerize, push to HF Spaces, and write the Noir-flavored README (where the "Necromancy" vibes go to live).
+- Spec Compliance (15%): 100% OpenEnv compliant, Docker-ready, and lightweight enough to run on basic HF Space hardware. 
