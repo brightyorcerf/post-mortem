@@ -3,6 +3,8 @@ from enum import Enum
 from typing import List, Dict, Optional, Any
 from pydantic import BaseModel, Field, ConfigDict
 
+#time format: ISO 8601 (like say 2026-04-07T14:30:00Z)
+
 # --- CORE ENUMS (grammar) ---
 
 class IOCType(str, Enum):
