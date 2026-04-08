@@ -172,7 +172,7 @@ def state() -> JSONResponse:
     raw = env.state().model_dump()
     return JSONResponse(raw)
 
-app.get("/")
+@app.get("/")
 def read_root():
     content = {
         "project": "post-mortem",
