@@ -46,15 +46,14 @@ The environment is a benchmark for relational reasoning under uncertainty. The a
 ---
 
 ### The Ground Truth: TruthDAG
-What makes post-mortem unique among cybersecurity environments is its embedded TruthDAG — a Directed Acyclic Graph that encodes the precise Kill Chain executed by the adversary.
 
-Nodes: Each node represents a verifiable forensic fact:
-   * `NETWORK_IP` (e.g., C2 callback address)
-   * `EVENT_TIMESTAMP` (e.g., moment of successful brute-force)
-   * `PATH_TO_FILE` (e.g., location of a timestomped binary)
-   * Edges: define causal prerequisite relationships. An agent that identifies a C2 callback IP without first locating the persistence mechanism receives reduced credit due to a broken chain penalty.
+What makes post-mortem unique is its embedded TruthDAG — a Directed Acyclic Graph that encodes the precise Kill Chain executed by the adversary.
+- Nodes: Each node represents a verifiable forensic fact (e.g., IPs, Timestamps, or Paths) as defined in the IOC Taxonomy (Section 2.3).
+- Edges: These define causal prerequisite relationships.
 
- This TruthDAG is never exposed to the agent; it exists solely as a **Deterministic Oracle** for the grader, providing the objective ground truth that real-world forensics often lacks.
+Example: An agent that identifies a C2 callback IP without first locating the persistence mechanism receives reduced credit due to a broken chain penalty.
+
+This TruthDAG acts as a Deterministic Oracle for the grader, providing the objective ground truth that real-world forensics often lacks.
  
 ### Determinism: σ=0 Across Runs
 
@@ -155,7 +154,7 @@ The attacker planted a malicious crontab entry under `www-data` (not `root`, a d
 
 ### 3.3 · `timestomp_proxy` — The Timestomp Proxy (Hard)
 
-> **Scenario:** A malicious insider trojaned `/usr/bin/login` and forged its modification timestamp to hide the intrusion window.
+> **Scenario:** A malicious insider trojaned `/usr/bin/login` and forged its modification timestamp to hide the intrusion window. A malicious insider trojaned /usr/bin/login and forged its modification timestamp.
 
 An insider with root access replaced the system `login` binary with a backdoored version that beacons to a C2 on every successful authentication. To mask the modification, they ran `touch -t <original_compile_date> /usr/bin/login`, forging the `mtime` back to the original package era (2019–2022). However, the **`ctime` (inode-change time) cannot be forged** without low-level filesystem manipulation — and they didn't do that. The temporal discrepancy between `mtime` and `ctime` is the smoking gun. Additionally, the file's on-disk size is **12–40 KB larger** than the size recorded in `/var/log/dpkg.log` at install time — a secondary corroborating signal.
 
@@ -173,12 +172,7 @@ An insider with root access replaced the system `login` binary with a backdoored
 - **`HONEY_1`**: `/usr/bin/sudo`: has a slightly stale `mtime`, but `mtime == ctime`, meaning it's genuinely old, not tampered.
 - **`HONEY_2`**: `/var/log/fw.log`: contains a **different** external IP (UFW firewall block log) that is *not* the C2. Agents that surface any external IP without validating its context get penalised.
 
-**What makes it "Hard":** This task requires *metadata literacy* (a capability beyond text comprehension). The agent must:
-1. Recognise that `mtime` and `ctime` should be correlated for untampered files
-2. Identify that `/usr/bin/login`'s `mtime` is years before its `ctime` (impossible condition without deliberate manipulation)
-3. Cross-reference the file size against `dpkg.log` package records
-4. Distinguish the real C2 IP (in the binary strings dump) from the decoy IP (in the firewall log)
-5. Construct the exact discrepancy proof string
+**What makes it "Hard":** This task requires metadata literacy; the agent must detect a mtime vs ctime discrepancy and cross-reference file sizes against dpkg.log to identify the intrusion.
 
 ---
 
@@ -221,7 +215,7 @@ The per-step cost creates an implicit planning pressure: an agent that reads eve
 The environment is pre-deployed and reachable for remote evaluation:
 URL: [https://huggingface.co/spaces/brightyorcerf/post-mortem](https://huggingface.co/spaces/brightyorcerf/post-mortem)
 
-### 5.1 · Docker
+### 5.2 · Docker
 
 ```bash
 # Build the image
@@ -232,7 +226,7 @@ docker run -p 7860:7860 shadow-register:latest
 ```
 The server starts on port `7860` with a health check at `/ping`.
 
-### 5.2 · Local Development
+### 5.3 · Local Development
 
 ```bash
 # Install dependencies
@@ -243,7 +237,7 @@ python3 -m server.app
 # → Uvicorn running on http://0.0.0.0:7860
 ```
 
-### 5.3 · Running Inference
+### 5.4 · Running Inference
 
 ```bash
 # Set required environment variables
@@ -261,7 +255,7 @@ python3 inference.py --task timestomp_proxy --seed 42
 ```
 
 
-### 5.4 · OpenEnv Validation
+### 5.5 · OpenEnv Validation
 
 ```bash
 openenv validate .
@@ -276,13 +270,28 @@ The environment exposes the four required OpenEnv endpoints:
 | `/step` | `POST` | Execute a `ForensicAction`, return next observation |
 | `/state` | `GET` | Return full `InternalState` + TruthDAG (**grader only**) |
 
-### 5.5 Tests
+### 5.6 Tests
 
 ```bash
 python3 tests/evaluateStability.py
 python3 tests/testRun.py
 python3 tests/testSpec.py
 ```
+
+---
+
+## 7 · Preliminary Baseline Performance
+
+The following results represent zero-shot performance using a ReAct-style prompting strategy. All evaluations were conducted at `temperature=0` to minimize variance, though model-side non-determinism remains.
+
+| Agent / Model | `noisy_entry` (Easy) | `stealthy_persistence` (Mid) | `timestomp_proxy` (Hard) |
+| :--- | :---: | :---: | :---: |
+| **Oracle (Hardcoded)** | 1.00 | 1.00 | 1.00 |
+| **GPT-4o** | 0.94 | 0.58 | 0.14 |
+| **GPT-4o-mini** | 0.88 | 0.32 | 0.04 |
+| **Random Baseline** | 0.02 | 0.00 | 0.00 |
+
+The significant performance decay in `timestomp_proxy` highlights a specific "reasoning gap" in current LLMs regarding temporal metadata analysis. While models successfully identify the tampered binary, they frequently fail to provide the exact `mtime/ctime` discrepancy proof required by the TruthDAG, resulting in reduced partial credit.
 
 ---
 
