@@ -171,6 +171,21 @@ def state() -> JSONResponse:
     raw = env.state().model_dump()
     return JSONResponse(raw)
 
+@app.get("/")
+def read_root():
+    return {
+        "project": "post-mortem",
+        "status": "Online",
+        "endpoints": {
+            "health": "/ping",
+            "init": "/reset",
+            "action": "/step",
+            "debug": "/state"  
+        },
+        "documentation": "https://huggingface.co/spaces/brightyorcerf/post-mortem/blob/main/README.md",
+        "message": "Forensics Lab Environment Active."
+    }
+
 
 # ---------------------------------------------------------------------------
 # Dev entry point
