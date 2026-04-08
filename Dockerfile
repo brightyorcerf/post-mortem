@@ -22,8 +22,13 @@ COPY inference.py    .
 COPY openenv.yaml    .
 
 # ── HF Spaces runs as a non-root user (UID 1000) ─────────────────────────────
-RUN useradd -m -u 1000 analyst
-USER analyst
+RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user \
+    PATH=/home/user/.local/bin:$PATH
+
+WORKDIR $HOME/app
+COPY --chown=user . $HOME/app
 
 # ── Port (HF Spaces expects 7860; map externally if needed) ──────────────────
 ENV PORT=7860
