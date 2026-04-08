@@ -1,0 +1,256 @@
+SHADOW_REGISTER — Pre-Submission Codebase Audit
+================================================
+You are a senior systems auditor reviewing the SHADOW_REGISTER OpenEnv
+submission before it goes live on Hugging Face Spaces. Your job is to
+produce a detailed REPORT CARD covering correctness, spec compliance,
+robustness, and scoring integrity.
+
+The project is a cybersecurity / DFIR benchmark environment with:
+  • schema.py          — Pydantic typed models
+  • world_gen.py       — deterministic world generator (numpy seed)
+  • env.py             — ShadowRegisterEnv (step/reset/state game loop)
+  • grader.py          — scoring referee (weighted DAG comparison)
+  • server.py          — FastAPI HTTP wrapper
+  • inference.py       — baseline agent script (OpenAI client)
+  • evaluate_stability.py — σ=0 determinism verifier
+  • openenv.yaml       — OpenEnv spec declaration
+  • Dockerfile         — container build
+  • requirements.txt   — pinned deps
+
+════════════════════════════════════════════════════════════════════════
+SECTION 1 — INFERENCE.PY COMPLIANCE  (Hard gate — fail = disqualified)
+════════════════════════════════════════════════════════════════════════
+Check every item below. Mark ✓ PASS or ✗ FAIL with a one-line reason.
+
+[ ] API_BASE_URL is read from env:   os.getenv("API_BASE_URL", "<default>")
+[ ] MODEL_NAME   is read from env:   os.getenv("MODEL_NAME",   "<default>")
+[ ] HF_TOKEN     is read from env:   os.getenv("HF_TOKEN")   — NO default value
+[ ] The OpenAI client is constructed as:
+      OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+    (NOT api_key=API_KEY or any other variable name)
+[ ] log_start() emits EXACTLY:
+      [START] task=<task> env=<env> model=<model>
+    on a single line with no JSON wrapping
+[ ] log_step() emits EXACTLY:
+      [STEP] step=<n> action=<action> reward=<r:.2f> done=<true|false> error=<val|null>
+    — reward is formatted to 2 decimal places
+    — done is lowercase string ("true" / "false"), not Python bool
+    — error is the string "null" (not Python None or JSON null) when absent
+[ ] log_end() emits EXACTLY:
+      [END] success=<true|false> steps=<n> score=<s:.3f> rewards=<r1,r2,...>
+    — score is formatted to 3 decimal places
+    — rewards is comma-joined with 2dp each, no spaces, no brackets
+[ ] score is clamped to [0.0, 1.0] before log_end()
+[ ] The script file is named inference.py (not infer.py, run.py, etc.)
+[ ] inference.py is in the ROOT directory of the project (not /src, /scripts)
+[ ] All LLM calls go through the OpenAI client — no direct httpx/requests to LLM
+[ ] No hardcoded API keys anywhere in the file
+
+If ANY of the above is ✗ FAIL, flag it as CRITICAL and list the exact
+line number and the corrected code snippet.
+
+════════════════════════════════════════════════════════════════════════
+SECTION 2 — OPENENV SPEC COMPLIANCE
+════════════════════════════════════════════════════════════════════════
+[ ] reset() returns a StepResult with observation, reward=0.0, done=False
+[ ] step(action) always returns StepResult — never raises an unhandled exception
+[ ] state() returns InternalState — confirmed grader-only, not exposed to agent
+[ ] openenv.yaml exists at project root
+[ ] openenv.yaml contains: name, version, tasks (≥3), observation_space,
+    action_space, reward, environment_variables (API_BASE_URL, MODEL_NAME, HF_TOKEN)
+[ ] Each task in openenv.yaml has: id, difficulty, reward_range [0.0, 1.0],
+    success_threshold
+[ ] ForensicObs is a valid Pydantic BaseModel with all fields typed
+[ ] ForensicAction is a valid Pydantic BaseModel with all fields typed
+[ ] Reward is strictly within [0.0, 1.0] — test the clamp in grader.py
+[ ] /ping endpoint returns HTTP 200 with {"status": "ok"}
+[ ] /reset accepts POST with {"task": str, "seed": int}
+[ ] /step accepts POST with {"action": ForensicAction}
+[ ] /state accepts GET
+
+For each ✗ FAIL, specify: which file, which function/endpoint, exact issue,
+and proposed fix.
+
+════════════════════════════════════════════════════════════════════════
+SECTION 3 — DETERMINISM & REPRODUCIBILITY AUDIT
+════════════════════════════════════════════════════════════════════════
+This is scored explicitly in the evaluation (σ=0 requirement).
+
+[ ] world_gen.py creates rng = np.random.RandomState(seed) — NOT np.random.seed()
+[ ] The rng instance is passed explicitly to every helper function
+[ ] No calls to random.random(), os.urandom(), or time.time() for world content
+[ ] datetime.now() is only used for relative offset calculations, not raw content
+[ ] VirtualFile content is fully deterministic given (task, seed)
+[ ] TruthDAG nodes and edges are fully deterministic given (task, seed)
+[ ] evaluate_stability.py hashes InternalState via json.dumps(sort_keys=True)
+[ ] evaluate_stability.py asserts σ = 0 and exits with code 1 on any variance
+[ ] The grader produces identical scores for identical (pivots, TruthDAG) inputs
+[ ] Noise files (syslog, bash_history, etc.) are seeded — not randomly ordered
+
+Flag any source of non-determinism with: file, line, variable, and fix.
+
+════════════════════════════════════════════════════════════════════════
+SECTION 4 — GRADER INTEGRITY AUDIT
+════════════════════════════════════════════════════════════════════════
+[ ] calculate_final_score() returns a float in [0.0, 1.0] — always clamped
+[ ] Honeypot penalty (-0.4) is applied at Tag time AND accounted for in grader
+[ ] Weighted node scoring: sum of matched node.weight values ≤ 1.0 total
+[ ] DAG chain multiplier correctly halves credit for broken prerequisite chains
+[ ] IOC matching is type-aware (COMMAND_STRING uses substring, PATH strips /)
+[ ] Efficiency bonus (+0.10) only applies when score > 0 (not for failed cases)
+[ ] GraderReport.score is rounded to 6 decimal places consistently
+[ ] grade_submission() correctly reads env.last_pivots — not stale from prior episode
+[ ] An empty pivot list returns score=0.0 without crashing
+[ ] A pivot list with ONLY honeypot entries returns score ≥ 0.0 (clamped, not negative)
+
+For each issue, provide: expected behaviour, observed bug, and fix.
+
+════════════════════════════════════════════════════════════════════════
+SECTION 5 — ENVIRONMENT LOGIC AUDIT
+════════════════════════════════════════════════════════════════════════
+[ ] Budget decrements by exactly 1 per step — including failed/error actions
+[ ] When budget hits 0, done=True is returned immediately
+[ ] After done=True, subsequent step() calls return an error, not a crash
+[ ] Read offset=0 returns the first 1000 chars (not chars 1–1000)
+[ ] Read past EOF returns a clear message, not an IndexError
+[ ] Search on an empty query returns an error result, not a crash
+[ ] Tag updates tagged_evidence in the observation for all subsequent steps
+[ ] SubmitCase sets done=True and stores pivots in self._last_pivots
+[ ] Milestone reward (+0.20) is only granted ONCE per artifact path per episode
+[ ] reset() fully wipes: budget, milestones, tagged_evidence, episode_reward, _last_pivots
+[ ] The 1000-char window uses [:1000] on the string — not a word-boundary truncation
+[ ] Inspect on a non-existent path returns an error view, not a 500
+
+════════════════════════════════════════════════════════════════════════
+SECTION 6 — DOCKER & DEPLOYMENT AUDIT
+════════════════════════════════════════════════════════════════════════
+[ ] Dockerfile uses a specific base tag (not :latest for Python)
+[ ] WORKDIR is set before COPY commands
+[ ] All source files are explicitly COPYed (no wildcard COPY . .)
+[ ] The server runs on PORT env var, defaulting to 7860 for HF Spaces
+[ ] HEALTHCHECK hits /ping with appropriate timeout/retries
+[ ] The container runs as a non-root user (UID 1000) for HF Spaces compat
+[ ] requirements.txt has pinned versions (no bare "fastapi", "openai")
+[ ] requirements.txt does NOT include torch, tensorflow, or heavy ML deps
+[ ] docker build completes without network calls at runtime
+[ ] The HEALTHCHECK uses curl — verify curl is installed in the image
+
+════════════════════════════════════════════════════════════════════════
+SECTION 7 — RUNTIME PERFORMANCE AUDIT  (2 vCPU / 8 GB constraint)
+════════════════════════════════════════════════════════════════════════
+[ ] Search uses re.compile() + findall — no fuzzy/embedding search
+[ ] No torch, sentence-transformers, or sklearn imports anywhere
+[ ] World generation completes in < 1 second per task
+[ ] Total InternalState memory footprint < 100 MB (estimate string sizes)
+[ ] inference.py MAX_STEPS ≤ 40 to stay within the 20-minute runtime limit
+[ ] Each LLM call has a timeout or max_tokens cap to prevent hangs
+[ ] Server uses --workers 1 (single worker avoids memory doubling)
+[ ] evaluate_stability.py 100-iteration run completes in < 60 seconds
+
+════════════════════════════════════════════════════════════════════════
+SECTION 8 — SCHEMA CONSISTENCY AUDIT
+════════════════════════════════════════════════════════════════════════
+[ ] IOCType enum values match exactly between schema.py and openenv.yaml
+[ ] ActionType enum values match exactly between schema.py and openenv.yaml
+[ ] ForensicPivot.type field uses IOCType — not a raw string
+[ ] TruthNode.type field uses IOCType — not a raw string
+[ ] FileMetadata timestamps are ISO 8601 strings — not datetime objects
+[ ] VirtualFile.content is a plain str — not bytes
+[ ] InternalState.history is List[ForensicAction] — confirm reset() clears it
+[ ] ForensicObs.remaining_budget has ge=0, le=50 validators on the Pydantic field
+[ ] All Optional fields have explicit default=None — no bare Optional[X]
+
+════════════════════════════════════════════════════════════════════════
+SECTION 9 — SCENARIO FORENSIC VALIDITY
+════════════════════════════════════════════════════════════════════════
+Easy — noisy_entry:
+[ ] auth.log contains ≥ 30 "Failed password" lines before success
+[ ] All failed attempts come from the SAME attacker IP (not multiple)
+[ ] The success line timestamp is strictly AFTER the last failure
+[ ] Honeypot (/tmp/ssh_credentials.txt) does NOT contain the attacker IP
+
+Medium — stealthy_persistence:
+[ ] Malicious crontab is under www-data, NOT root
+[ ] The launcher path (/var/www/.config/.update_check) is NOT in /etc/crontab
+[ ] The base64 payload decodes to a valid shell command containing the C2 IP
+[ ] C2 IP is NOT present in any noise file (syslog, nginx log, etc.)
+[ ] Honeypot (/tmp/.cache_clear.sh) does NOT contain a C2 IP
+
+Hard — timestomp_proxy:
+[ ] login binary mtime is EARLIER than ctime (mtime is forged to past)
+[ ] ctime is within the "actual_inject_time" window (recent)
+[ ] The C2 IP appears in the binary content strings section
+[ ] The C2 IP does NOT appear in /var/log/fw.log's real block entries
+  (fw.log honeypot uses a DIFFERENT IP — verify they are not equal)
+[ ] discrepancy_proof string format is exactly: "mtime=<ISO> vs ctime=<ISO>"
+[ ] dpkg.log records the ORIGINAL (smaller) file size, not actual_size
+
+════════════════════════════════════════════════════════════════════════
+SECTION 10 — EDGE CASES & FAILURE MODES
+════════════════════════════════════════════════════════════════════════
+Test these scenarios mentally or with a quick script:
+
+[ ] Agent calls SubmitCase on step 1 with empty pivots → score=0, done=True, no crash
+[ ] Agent calls Read with offset > file length → EOF message, reward= -0.05, no IndexError
+[ ] Agent calls Inspect on "/" → no such file error, not a crash
+[ ] Agent calls Search with query="." → matches everything — is relevance score sane?
+[ ] Agent calls Tag with label="" → error message returned cleanly
+[ ] World generated with seed=0 → no off-by-one errors in rng.randint ranges
+[ ] World generated with seed=2**31-1 → max numpy seed — does RandomState accept it?
+[ ] Two consecutive reset() calls → second episode has a fully clean state
+[ ] grader called with remaining_budget=0 → no division-by-zero
+[ ] grader called with remaining_budget=50 → efficiency bonus fires correctly
+
+════════════════════════════════════════════════════════════════════════
+OUTPUT FORMAT — REPORT CARD
+════════════════════════════════════════════════════════════════════════
+After auditing all 10 sections, produce your report in this exact format:
+
+──────────────────────────────────────────────────
+  SHADOW_REGISTER — PRE-SUBMISSION REPORT CARD
+──────────────────────────────────────────────────
+
+SECTION SCORES (each out of 10):
+  S1  inference.py Compliance      : XX/10
+  S2  OpenEnv Spec Compliance      : XX/10
+  S3  Determinism & Reproducibility: XX/10
+  S4  Grader Integrity             : XX/10
+  S5  Environment Logic            : XX/10
+  S6  Docker & Deployment          : XX/10
+  S7  Runtime Performance          : XX/10
+  S8  Schema Consistency           : XX/10
+  S9  Scenario Forensic Validity   : XX/10
+  S10 Edge Cases & Failure Modes   : XX/10
+  ─────────────────────────────────
+  TOTAL                            : XX/100
+
+DISQUALIFICATION RISK:
+  [ ] NONE — all hard gates pass
+  OR list each failing hard-gate item with exact location + fix
+
+CRITICAL BUGS (must fix before submission):
+  1. [file:line] description → fix
+
+MODERATE ISSUES (should fix):
+  1. [file:line] description → fix
+
+MINOR IMPROVEMENTS (nice to have):
+  1. [file:line] description → suggestion
+
+ESTIMATED JUDGE SCORES (based on problem statement rubric):
+  Real-world utility     (30%): XX/30
+  Task & grader quality  (25%): XX/25
+  Environment design     (20%): XX/20
+  Code quality & spec    (15%): XX/15
+  Creativity & novelty   (10%): XX/10
+  ─────────────────────────────
+  PROJECTED TOTAL              : XX/100
+
+FINAL VERDICT:
+  One paragraph. Honest assessment of submission strength,
+  biggest remaining risk, and the single highest-leverage fix
+  to make before the deadline.
+──────────────────────────────────────────────────
+
+Now audit the SHADOW_REGISTER codebase against all 10 sections above
+and produce the full Report Card.

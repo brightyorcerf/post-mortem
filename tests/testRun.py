@@ -11,6 +11,8 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.append(str(Path(__file__).resolve().parent.parent))
+
 def test_docker_build():
     """TEST 1: Docker build succeeds on Linux"""
     print("\n" + "="*80)
@@ -18,7 +20,7 @@ def test_docker_build():
     print("="*80)
 
     # Check if Dockerfile exists
-    dockerfile = Path("Dockerfile")
+    dockerfile = Path(__file__).resolve().parent.parent / "Dockerfile"
     if not dockerfile.exists():
         print("❌ FAIL: Dockerfile not found")
         return False
@@ -32,7 +34,7 @@ def test_docker_build():
 
     all_exist = True
     for fname in copies:
-        exists = Path(fname).exists()
+        exists = (Path(__file__).resolve().parent.parent / fname).exists()
         status = "✅" if exists else "❌"
         print(f"  {status} {fname}")
         if not exists:

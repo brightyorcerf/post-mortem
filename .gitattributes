@@ -1,0 +1,6 @@
+# *.py filter=lfs diff=lfs merge=lfs -text
+# simplified attributes for compliance
+*.py text
+*.yaml text
+*.md text
+Dockerfile text

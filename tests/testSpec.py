@@ -10,6 +10,9 @@ import re
 import sys
 from pathlib import Path
 
+root_dir = Path(__file__).resolve().parent.parent
+sys.path.append(str(root_dir))
+
 def check_section(title: str):
     """Print a section header"""
     print(f"\n{'='*80}")
@@ -42,7 +45,7 @@ def verify_real_world_task():
     """1. Real-World Task Simulation"""
     check_section("FN REQ 1: Real-World Task Simulation")
 
-    readme_path = Path("README.md")
+    readme_path = root_dir / "README.md"
     if readme_path.exists():
         content = readme_path.read_text()
         if "forensic" in content.lower() or "incident response" in content.lower():
@@ -51,7 +54,7 @@ def verify_real_world_task():
             warn_check("Could not confirm real-world domain in README")
 
     # Check worldGen.py for task definitions
-    worldgen = Path("worldGen.py").read_text()
+    worldgen = (root_dir / "worldGen.py").read_text()
     if "noisy_entry" in worldgen and "stealthy_persistence" in worldgen and "timestomp_proxy" in worldgen:
         pass_check("Three realistic forensic scenarios defined")
         print(f"          - noisy_entry: brute-force attack detection")
@@ -69,7 +72,7 @@ def verify_openenv_compliance():
 
     # Check openenv.yaml exists
     checks_total += 1
-    yaml_path = Path("OpenEnv.yaml")
+    yaml_path = root_dir / "OpenEnv.yaml"
     if yaml_path.exists():
         pass_check("openenv.yaml file exists")
         checks_passed += 1
@@ -78,7 +81,7 @@ def verify_openenv_compliance():
 
     # Check schema.py for Pydantic models
     checks_total += 1
-    schema = Path("schema.py").read_text()
+    schema = (root_dir / "schema.py").read_text()
     if "BaseModel" in schema:
         pass_check("Pydantic BaseModel classes defined for observations/actions")
         checks_passed += 1
@@ -87,7 +90,7 @@ def verify_openenv_compliance():
 
     # Check env.py for required methods
     checks_total += 1
-    env_content = Path("env.py").read_text()
+    env_content = (root_dir / "env.py").read_text()
     required_methods = ["def reset", "def step", "def state"]
     if all(m in env_content for m in required_methods):
         pass_check("Environment implements reset(), step(), state() methods")
@@ -109,8 +112,8 @@ def verify_three_tasks():
     """3. Minimum of Three Tasks with Agent Graders"""
     check_section("FN REQ 3: Three Tasks with Graders")
 
-    grader = Path("grader.py").read_text()
-    worldgen = Path("worldGen.py").read_text()
+    grader = (root_dir / "grader.py").read_text()
+    worldgen = (root_dir / "worldGen.py").read_text()
 
     tasks = ["noisy_entry", "stealthy_persistence", "timestomp_proxy"]
 
@@ -134,7 +137,7 @@ def verify_reward_function():
     """4. Meaningful Reward Function"""
     check_section("FN REQ 4: Meaningful Reward Function")
 
-    env_content = Path("env.py").read_text()
+    env_content = (root_dir / "env.py").read_text()
 
     checks = [
         ("Step-level rewards", "reward" in env_content or "REWARD" in env_content),
@@ -152,7 +155,7 @@ def verify_baseline_inference():
     """5. Baseline Inference Script"""
     check_section("FN REQ 5: Baseline Inference Script")
 
-    inf_path = Path("inference.py")
+    inf_path = root_dir / "inference.py"
     if inf_path.exists():
         pass_check("inference.py baseline script exists")
 
@@ -188,13 +191,13 @@ def verify_hf_spaces():
     checks = []
 
     # Check Dockerfile
-    if Path("Dockerfile").exists():
+    if (root_dir / "Dockerfile").exists():
         checks.append(("Dockerfile for containerization", True))
     else:
         checks.append(("Dockerfile for containerization", False))
 
     # Check for space metadata
-    if Path(".gitattributes").exists():
+    if (root_dir / ".gitattributes").exists():
         checks.append((".gitattributes for HF Spaces", True))
     else:
         checks.append((".gitattributes for HF Spaces", False))
@@ -209,7 +212,7 @@ def verify_docker():
     """2. Containerized Execution"""
     check_section("NF REQ 2: Containerized Execution (Docker)")
 
-    docker_path = Path("Dockerfile")
+    docker_path = root_dir / "Dockerfile"
     if not docker_path.exists():
         fail_check("Dockerfile not found")
         return
@@ -236,7 +239,7 @@ def verify_documentation():
     """3. Documentation"""
     check_section("NF REQ 3: Documentation (README)")
 
-    readme_path = Path("README.md")
+    readme_path = root_dir / "README.md"
     if not readme_path.exists():
         fail_check("README.md not found")
         return
@@ -265,7 +268,7 @@ def verify_presubmission():
     """Pre-Submission Checklist"""
     check_section("PRE-SUBMISSION CHECKLIST")
 
-    inf_path = Path("inference.py")
+    inf_path = root_dir / "inference.py"
     if not inf_path.exists():
         fail_check("inference.py not found")
         return

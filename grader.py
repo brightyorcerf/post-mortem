@@ -178,6 +178,8 @@ def calculate_final_score(
     truth            : TruthDAG (from InternalState.truth_dag)
     remaining_budget : How many budget units remain when SubmitCase was called
     """
+
+    _supported = ['noisy_entry', 'stealthy_persistence', 'timestomp_proxy']
     report = GraderReport(score=0.0)
 
     if not pivots:
