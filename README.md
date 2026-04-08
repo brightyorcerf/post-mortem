@@ -81,6 +81,53 @@ State: The state() method returns the internal Ground Truth DAG. This is strictl
 - Deterministic Seeds: Mention that worldGen.py uses a strictly isolated numpy.random.RandomState.
 - Evaluation Script: evaluateStability.py is included. It verifies that across 100 iterations of a fixed seed, the score variance is σ=0.
 
+## Setup & Usage
+
+### Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/post-mortem.git
+cd post-mortem
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Running the Baseline
+
+```bash
+# Start the environment server (in one terminal)
+python server.py
+
+# Run the baseline inference script (in another terminal)
+export API_BASE_URL="https://api.openai.com/v1"
+export MODEL_NAME="gpt-4o"
+export HF_TOKEN="your-token-here"
+
+python inference.py --task noisy_entry --seed 42
+python inference.py --task stealthy_persistence --seed 42
+python inference.py --task timestomp_proxy --seed 42
+```
+
+### Verification & Testing
+
+```bash
+# Verify all requirements are met
+python test_verification.py
+
+# Test determinism (σ=0) across runs
+python evaluateStability.py --quick
+```
+
+### Baseline Performance
+
+| Task | Easy | Medium | Hard |
+|------|------|--------|------|
+| **Scenario** | Brute-force (noisy_entry) | Persistence (stealthy_persistence) | Timestomping (timestomp_proxy) |
+| **Target Score** | ~1.0 (oracle) | ~1.0 (oracle) | ~1.0 (oracle) |
+| **Honeypot-only Score** | 0.0 | 0.0 | 0.0 |
+
 ## Why This Wins
 - Real-World Utility (30%): Models a high-value, professional task (Incident Response) using standard frameworks (MITRE ATT&CK).
 - Grader Quality (25%): Moves beyond string matching. Graders check if the agent understands the relationship between files (the "Chain").
