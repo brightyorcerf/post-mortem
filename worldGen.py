@@ -104,14 +104,16 @@ def _iso(dt: datetime) -> str:
 
 def _random_base_time(rng: np.random.RandomState) -> datetime:
     """
-    Return a random datetime 30–90 days in the past.
-    This anchors the entire timeline for a generated world.
+    Return a deterministic datetime anchored to a fixed epoch.
+    Using a fixed reference point (instead of datetime.now()) ensures
+    identical world generation for any (task, seed) pair — required for σ=0.
     """
+    _EPOCH = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
     days_ago = int(rng.randint(30, 90))
     hour     = int(rng.randint(0, 24))
     minute   = int(rng.randint(0, 60))
     second   = int(rng.randint(0, 60))
-    return datetime.now(timezone.utc).replace(microsecond=0) - timedelta(
+    return _EPOCH - timedelta(
         days=days_ago, hours=hour, minutes=minute, seconds=second
     )
 

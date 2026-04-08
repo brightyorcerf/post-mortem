@@ -29,7 +29,6 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
-import httpx
 from openai import OpenAI
 
 # ---------------------------------------------------------------------------
@@ -38,9 +37,9 @@ from openai import OpenAI
 
 API_BASE_URL: str = os.environ.get("API_BASE_URL", "https://api.openai.com/v1")
 MODEL_NAME:   str = os.environ.get("MODEL_NAME",   "gpt-4o")
-API_KEY:      str = os.environ.get("HF_TOKEN",     "no-key-set")
+HF_TOKEN:     str = os.getenv("HF_TOKEN")          # NO default — spec requirement
 
-SERVER_URL:   str = os.environ.get("SERVER_URL",   "http://localhost:8000")
+SERVER_URL:   str = os.environ.get("SERVER_URL",   "http://localhost:7860")
 
 TEMPERATURE:  float = 0.0
 MAX_TOKENS:   int   = 1024
@@ -55,12 +54,7 @@ BENCHMARK = "shadow_register"
 # ---------------------------------------------------------------------------
 
 def log_start(*, task: str, env: str, model: str) -> None:
-    print(json.dumps({
-        "event":  "START",
-        "task":   task,
-        "env":    env,
-        "model":  model,
-    }), flush=True)
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
 def log_step(
@@ -71,14 +65,13 @@ def log_step(
     done:   bool,
     error:  Optional[str],
 ) -> None:
-    print(json.dumps({
-        "event":  "STEP",
-        "step":   step,
-        "action": action,
-        "reward": reward,
-        "done":   done,
-        "error":  error,
-    }), flush=True)
+    done_str  = "true" if done else "false"
+    error_str = error if error is not None else "null"
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f}"
+        f" done={done_str} error={error_str}",
+        flush=True,
+    )
 
 
 def log_end(
@@ -88,13 +81,13 @@ def log_end(
     score:   float,
     rewards: List[float],
 ) -> None:
-    print(json.dumps({
-        "event":   "END",
-        "success": success,
-        "steps":   steps,
-        "score":   score,
-        "rewards": rewards,
-    }), flush=True)
+    success_str = "true" if success else "false"
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(
+        f"[END] success={success_str} steps={steps}"
+        f" score={score:.3f} rewards={rewards_str}",
+        flush=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +102,7 @@ class ShadowRegisterClient:
     """
 
     def __init__(self, base_url: str = SERVER_URL) -> None:
+        import httpx
         self._base = base_url.rstrip("/")
         self._http = httpx.Client(timeout=30.0)
         self.last_grader_report: Optional[Dict[str, Any]] = None
@@ -278,7 +272,7 @@ def main(task: str, seed: int, max_steps: int) -> None:
         )
         sys.exit(1)
 
-    client_llm = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    client_llm = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
     history:     List[str]   = []
     rewards:     List[float] = []
@@ -359,6 +353,8 @@ def main(task: str, seed: int, max_steps: int) -> None:
         except Exception as e:
             print(f"[DEBUG] Client close error: {e}", flush=True)
 
+        # Clamp score to [0.0, 1.0] before final log — spec requirement
+        score = max(0.0, min(score, 1.0))
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 

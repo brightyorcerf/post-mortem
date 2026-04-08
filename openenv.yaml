@@ -15,7 +15,7 @@ tags: [dfir, forensics, reasoning, multi-step, deception]
 # ── Runtime ─────────────────────────────────────────────────────────────────
 runtime:
   image: shadow-register:latest
-  port: 8000
+  port: 7860
   healthcheck: /ping
   startup_timeout_seconds: 30
 

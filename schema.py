@@ -54,7 +54,7 @@ class ForensicObs(BaseModel):
     working_directory: str
     artifact_metadata: Optional[FileMetadata] = None
     tagged_evidence: Dict[str, str] = Field(default_factory=dict)
-    remaining_budget: int = Field(default=50)
+    remaining_budget: int = Field(default=50, ge=0, le=50)
     last_action_log: str = ""
 
 # --- THE ACTION SPACE (Agent's Input) ---

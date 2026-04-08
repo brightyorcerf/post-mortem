@@ -114,6 +114,7 @@ class ShadowRegisterEnv:
         self._milestones_hit: set = set()
         self._episode_reward: float = 0.0
         self._done          = False
+        self._last_pivots   = []     # wipe stale pivots from prior episode
 
         self._obs = ForensicObs(
             current_view=self._welcome_banner(),
@@ -148,7 +149,21 @@ class ShadowRegisterEnv:
         }.get(action.action)
 
         if handler is None:
-            return self._error_result(f"Unknown action type: {action.action}")
+            # Unknown actions still cost budget — budget decrements for ALL steps
+            self._obs = ForensicObs(
+                **{**self._obs.model_dump(),
+                   "current_view": f"ERROR: Unknown action type: {action.action}",
+                   "last_action_log": f"Unknown action type: {action.action}",
+                   "remaining_budget": self._obs.remaining_budget - 1}
+            )
+            total_reward = REWARD_STEP_COST
+            self._episode_reward += total_reward
+            if self._obs.remaining_budget <= 0:
+                self._done = True
+            return StepResult(
+                observation=self._obs, reward=total_reward, done=self._done,
+                info={"error": f"Unknown action type: {action.action}"},
+            )
 
         step_reward, view, meta, log_msg = handler(action)
 
@@ -364,8 +379,10 @@ class ShadowRegisterEnv:
         """
         pivots = action.pivots or []
         if not pivots:
-            view = "SUBMIT: No ForensicPivots provided. Submission rejected."
-            return 0.0, view, None, "SubmitCase: empty pivot list."
+            self._done = True
+            self._last_pivots = []
+            view = "SUBMIT: No ForensicPivots provided. Score = 0. Episode terminated."
+            return 0.0, view, None, "SubmitCase: empty pivot list — episode ended."
 
         self._done = True
         # Store pivots in info so the grader can retrieve them
@@ -399,16 +416,6 @@ class ShadowRegisterEnv:
             f"Available commands: Search, Inspect, Read, Tag, SubmitCase\n"
             f"Tip: Use Search to locate artifacts, Inspect to check metadata."
         )
-
-    def _error_result(self, msg: str) -> StepResult:
-        obs = ForensicObs(
-            **{**self._obs.model_dump(),
-               "current_view": f"ERROR: {msg}",
-               "last_action_log": msg}
-        )
-        return StepResult(observation=obs, reward=0.0, done=False,
-                          info={"error": msg})
-
     @property
     def last_pivots(self) -> list[ForensicPivot]:
         """Retrieve the pivots from the most recent SubmitCase action."""

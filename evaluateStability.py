@@ -99,6 +99,10 @@ def check_task_stability(
     t0 = time.perf_counter()
 
     for i in range(n_iterations):
+        # Catch datetime.now() drift bugs by sleeping between the first two iterations
+        if i == 1:
+            time.sleep(1.5)
+
         # --- generate world ---
         world = generate_world(task, seed)
         env   = ShadowRegisterEnv(world)
