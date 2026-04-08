@@ -64,8 +64,15 @@ def _require_env() -> ShadowRegisterEnv:
 # ---------------------------------------------------------------------------
 
 class ResetRequest(BaseModel):
-    task: str = "noisy_entry"
+    task: Optional[str] = None
+    task_id: Optional[str] = None
+    id: Optional[str] = None
     seed: int = 42
+
+    def resolve_task(self) -> str:
+        # Check standard SDK fields first, fallback to noisy_entry
+        t = self.task_id or self.task or self.id
+        return t if t else "noisy_entry"
 
 
 class StepRequest(BaseModel):
@@ -114,13 +121,14 @@ def reset(req: Optional[ResetRequest] = Body(default=None)) -> JSONResponse:
     if req is None:
         req = ResetRequest()
 
-    if req.task not in VALID_TASKS:
+    requested_task = req.resolve_task()
+    if requested_task not in VALID_TASKS:
         # Fallback to a valid task so the validator doesn't see a 422
-        req.task = "noisy_entry"
+        requested_task = "noisy_entry"
 
-    world = generate_world(req.task, req.seed)
+    world = generate_world(requested_task, req.seed)
     _session.env  = ShadowRegisterEnv(world)
-    _session.task = req.task
+    _session.task = requested_task
     _session.seed = req.seed
 
     result = _session.env.reset()
@@ -158,6 +166,8 @@ def step(req: StepRequest) -> JSONResponse:
             "penalties": report.penalties,
             "bonuses":   report.bonuses,
         }
+        # Standard OpenEnv spec requirement: score MUST be at the top level of info
+        payload["info"]["score"] = report.score
 
     return JSONResponse(payload)
 

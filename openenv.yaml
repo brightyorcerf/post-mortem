@@ -24,6 +24,7 @@ docker:
 # ── Tasks ───────────────────────────────────────────────────────────────────
 tasks:
   - id: noisy_entry
+    grader: "grader.py"
     display_name: "The Noisy Entry"
     difficulty: easy
     description: >
@@ -35,6 +36,7 @@ tasks:
     success_threshold: 0.8
 
   - id: stealthy_persistence
+    grader: "grader.py"
     display_name: "The Stealthy Persistence"
     difficulty: medium
     description: >
@@ -46,6 +48,7 @@ tasks:
     success_threshold: 0.8
 
   - id: timestomp_proxy
+    grader: "grader.py"
     display_name: "The Timestomp Proxy"
     difficulty: hard
     description: >
