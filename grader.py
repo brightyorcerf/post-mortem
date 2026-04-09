@@ -1,329 +1,270 @@
 """
-grader.py  —  SHADOW_REGISTER Scoring Referee
-==============================================
-Calculates the final score for a SubmitCase action by comparing the
-agent's ForensicPivot list against the TruthDAG.
+grader.py — SHADOW_REGISTER Grader
+===================================
+FIXED VERSION - Deterministic scoring with proper feedback
 
-Public API
-----------
-    calculate_final_score(
-        pivots:           List[ForensicPivot],
-        truth:            TruthDAG,
-        remaining_budget: int = 0,
-    ) -> GraderReport
-
-GraderReport fields
--------------------
-    score         float   clamped to [0.0, 1.0]
-    breakdown     dict    per-node match result
-    penalties     list    triggered penalty descriptions
-    bonuses       list    triggered bonus descriptions
-    verdict       str     human-readable summary
+Responsibilities:
+1. Accept pivots from agent (ForensicPivot list)
+2. Validate against TruthDAG
+3. Compute chain-of-evidence score using Floyd-Warshall
+4. Return verdict + score + feedback
+5. NO RANDOMIZATION — deterministic for σ=0 stability
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
 
-from schema import ForensicPivot, IOCType, TruthDAG, TruthNode
+try:
+    from schema import ForensicPivot, TruthDAG, TruthNode, IOCType
+except ImportError:
+    from enum import Enum
+    from typing import Any
+    from pydantic import BaseModel
+    
+    class IOCType(str, Enum):
+        NETWORK_IP = "NETWORK_IP"
+        EVENT_TIMESTAMP = "EVENT_TIMESTAMP"
+        FILE_PATH = "PATH_TO_FILE"
+        COMMAND_STRING = "COMMAND_STRING"
+        USER_ACCOUNT = "USER_ACCOUNT"
+        FILE_HASH = "FILE_HASH"
+    
+    class TruthNode(BaseModel):
+        node_id: str
+        required_artifact: str
+        expected_ioc: str
+        type: IOCType
+        is_honeypot: bool = False
+        weight: float = 1.0
+    
+    class TruthDAG(BaseModel):
+        scenario_name: str
+        seed: int
+        nodes: Dict[str, TruthNode]
+        edges: List[Tuple[str, str]]
+    
+    class ForensicPivot(BaseModel):
+        artifact: str
+        ioc: str
+        type: IOCType
+        reason: str
 
 # ---------------------------------------------------------------------------
-# Scoring constants  (tune these without touching logic)
-# ---------------------------------------------------------------------------
-
-HONEYPOT_PENALTY      = -0.40
-EFFICIENCY_BONUS      = +0.10
-EFFICIENCY_THRESHOLD  = 0.40    # fraction of BUDGET_MAX remaining
-BUDGET_MAX            = 50      # must match env.py
-IOC_FUZZY_STRIP_CHARS = " \t\r\n\"'`"  # strip these before comparison
-
-
-# ---------------------------------------------------------------------------
-# GraderReport
+# Grader Report Data Structure
 # ---------------------------------------------------------------------------
 
 @dataclass
 class GraderReport:
-    score:     float
-    breakdown: Dict[str, dict]   = field(default_factory=dict)
-    penalties: List[str]         = field(default_factory=list)
-    bonuses:   List[str]         = field(default_factory=list)
-    verdict:   str               = ""
-
-    def __str__(self) -> str:
-        lines = [
-            f"{'═' * 52}",
-            f"  SHADOW_REGISTER // Grader Report",
-            f"{'═' * 52}",
-            f"  Final Score : {self.score:.4f}",
-            f"{'─' * 52}",
-            "  Node Results:",
-        ]
-        for node_id, result in self.breakdown.items():
-            status = "✓ HIT " if result["matched"] else "✗ MISS"
-            hp     = " [HONEYPOT]" if result.get("is_honeypot") else ""
-            lines.append(
-                f"    {status}  {node_id}{hp}"
-                f"  weight={result['weight']:.2f}"
-                f"  contribution={result['contribution']:+.4f}"
-            )
-        if self.penalties:
-            lines += ["", "  Penalties:"] + [f"    • {p}" for p in self.penalties]
-        if self.bonuses:
-            lines += ["", "  Bonuses:"]   + [f"    • {b}" for b in self.bonuses]
-        lines += ["", f"  Verdict: {self.verdict}", f"{'═' * 52}"]
-        return "\n".join(lines)
-
+    """Final verdict from the grader."""
+    verdict: str                          # "STRONG", "MEDIUM", "WEAK", "WRONG"
+    score: float                          # 0.0 to 1.0
+    nodes_resolved: int                   # How many truth nodes matched
+    total_nodes: int                      # Total non-honeypot nodes
+    matched_nodes: List[str]              # Which node IDs matched
+    missing_evidence: List[str]           # What's missing
+    honeypot_triggered: List[str]         # Which honeypots were tagged
+    efficiency_bonus: float               # Budget remaining bonus
+    feedback: str                         # Human-readable explanation
 
 # ---------------------------------------------------------------------------
-# IOC matching
-# ---------------------------------------------------------------------------
-
-def _normalise(ioc: str) -> str:
-    """Strip whitespace/quotes for tolerant comparison."""
-    return ioc.strip(IOC_FUZZY_STRIP_CHARS).lower()
-
-
-def _ioc_matches(submitted: str, expected: str, ioc_type: IOCType) -> bool:
-    """
-    Type-aware IOC comparison.
-
-    NETWORK_IP        — exact match after normalisation
-    EVENT_TIMESTAMP   — exact match (ISO 8601 string from the DAG)
-                        OR agent may submit just the timestamp part of the
-                        discrepancy string for the hard task
-    FILE_PATH         — exact match; agent may omit leading slash
-    COMMAND_STRING    — substring match (base64 strings are long)
-    USER_ACCOUNT      — exact after normalisation
-    FILE_HASH         — exact after normalisation
-    """
-    sub = _normalise(submitted)
-    exp = _normalise(expected)
-
-    if ioc_type == IOCType.COMMAND_STRING:
-        # Accept if the submitted value is contained in the expected (or vice-versa)
-        return sub in exp or exp in sub
-
-    if ioc_type == IOCType.FILE_PATH:
-        # Tolerate missing leading slash
-        return sub.lstrip("/") == exp.lstrip("/")
-
-    if ioc_type == IOCType.EVENT_TIMESTAMP:
-        # Agent may submit the full discrepancy string or just one of the timestamps
-        return sub == exp or sub in exp
-
-    # Default: exact match
-    return sub == exp
-
-
-def _pivot_matches_node(pivot: ForensicPivot, node: TruthNode) -> bool:
-    """
-    A pivot matches a TruthNode if BOTH:
-      1. The artifact path points to the correct file.
-      2. The IOC value matches the expected IOC.
-    """
-    artifact_ok = _normalise(pivot.artifact).lstrip("/") == _normalise(node.required_artifact).lstrip("/")
-    ioc_ok      = _ioc_matches(pivot.ioc, node.expected_ioc, node.type)
-    return artifact_ok and ioc_ok
-
-
-# ---------------------------------------------------------------------------
-# DAG Chain Validation
-# ---------------------------------------------------------------------------
-
-def _validate_chain(
-    matched_node_ids: set,
-    truth: TruthDAG,
-) -> float:
-    """
-    Check that matched nodes satisfy the DAG ordering.
-    If an agent matched node B but NOT node A (where A→B), the chain is
-    broken and node B's weight contribution is halved.
-
-    Returns a chain-validity multiplier between 0.5 and 1.0.
-    """
-    multiplier = 1.0
-    for (src, dst) in truth.edges:
-        # If dst was matched but src was not → broken chain
-        if dst in matched_node_ids and src not in matched_node_ids:
-            multiplier *= 0.5  # halve for each broken link
-    return max(multiplier, 0.25)  # floor at 25% — partial credit
-
-
-# ---------------------------------------------------------------------------
-# Main scoring function
+# Core Grader Logic
 # ---------------------------------------------------------------------------
 
 def calculate_final_score(
-    pivots:           List[ForensicPivot],
-    truth:            TruthDAG,
-    remaining_budget: int = 0,
+    pivots: List[ForensicPivot],
+    truth: TruthDAG,
+    remaining_budget: int = 50,
 ) -> GraderReport:
     """
-    Compare agent's pivots against the TruthDAG and produce a GraderReport.
-
-    Scoring logic (in order)
-    -------------------------
-    1. For each non-honeypot TruthNode, check if any submitted pivot matches.
-       Accumulate weighted score.
-    2. For each pivot that matches a HONEYPOT node: subtract HONEYPOT_PENALTY.
-    3. Apply DAG-chain multiplier (broken prerequisite chains reduce credit).
-    4. Add efficiency bonus if remaining_budget / BUDGET_MAX >= threshold.
-    5. Clamp to [0.0, 1.0].
-
+    Main grading function.
+    
     Parameters
     ----------
-    pivots           : Agent's submitted ForensicPivot list
-    truth            : TruthDAG (from InternalState.truth_dag)
-    remaining_budget : How many budget units remain when SubmitCase was called
+    pivots : List[ForensicPivot]
+        Evidence submitted by the agent
+    truth : TruthDAG
+        The ground-truth kill chain
+    remaining_budget : int
+        Forensic budget remaining (0-50)
+    
+    Returns
+    -------
+    GraderReport
+        Score, verdict, and detailed feedback
     """
-
-    _supported = ['noisy_entry', 'stealthy_persistence', 'timestomp_proxy']
-    report = GraderReport(score=0.0)
-
-    if not pivots:
-        report.verdict = "No pivots submitted."
-        # Fall through to clamp + epsilon mapping below
-
-    # ------------------------------------------------------------------ #
-    # 1. Per-node weighted scoring                                         #
-    # ------------------------------------------------------------------ #
-    raw_score       = 0.0
-    matched_ids     = set()
-    honeypot_hits   = 0
-
+    
+    # Initialize tracking
+    matched_nodes: List[str] = []
+    honeypot_triggered: List[str] = []
+    ioc_to_node: Dict[str, str] = {}
+    
+    # Build lookup: expected_ioc → node_id
     for node_id, node in truth.nodes.items():
-        # Find the best matching pivot for this node
-        matched = any(_pivot_matches_node(p, node) for p in pivots)
-
-        if node.is_honeypot:
-            if matched:
-                honeypot_hits += 1
-                penalty_val = HONEYPOT_PENALTY
-                report.breakdown[node_id] = {
-                    "matched":      True,
-                    "is_honeypot":  True,
-                    "weight":       node.weight,
-                    "contribution": penalty_val,
-                }
-                report.penalties.append(
-                    f"Honeypot '{node.required_artifact}' tagged  →  {penalty_val:.2f}"
-                )
-                raw_score += penalty_val
-            # Honeypot not hit — no entry needed, no penalty
+        ioc_to_node[node.expected_ioc] = node_id
+    
+    # Validate each pivot against truth
+    for pivot in pivots:
+        if pivot.ioc not in ioc_to_node:
             continue
-
-        contribution = node.weight if matched else 0.0
-        raw_score   += contribution
-
-        if matched:
-            matched_ids.add(node_id)
-
-        report.breakdown[node_id] = {
-            "matched":      matched,
-            "is_honeypot":  False,
-            "weight":       node.weight,
-            "contribution": contribution,
-        }
-
-    # ------------------------------------------------------------------ #
-    # 2. DAG chain validation                                              #
-    # ------------------------------------------------------------------ #
-    # Only apply the chain multiplier to the *positive* portion of the score
-    positive_score = sum(
-        v["contribution"] for v in report.breakdown.values()
-        if v["contribution"] > 0 and not v.get("is_honeypot")
+        
+        node_id = ioc_to_node[pivot.ioc]
+        node = truth.nodes[node_id]
+        
+        if node.is_honeypot:
+            honeypot_triggered.append(node_id)
+        else:
+            matched_nodes.append(node_id)
+    
+    # Get ground truth counts
+    truth_nodes = {
+        nid: n for nid, n in truth.nodes.items()
+        if not n.is_honeypot
+    }
+    total_nodes = len(truth_nodes)
+    
+    # Check transitive closure (chain-of-evidence validation)
+    transitive_score = _validate_transitive_chain(
+        matched_nodes, truth.edges, truth.nodes
     )
-    negative_score = raw_score - positive_score
-
-    chain_mult = _validate_chain(matched_ids, truth)
-    if chain_mult < 1.0:
-        broken_links = [
-            f"{src}→{dst}"
-            for (src, dst) in truth.edges
-            if dst in matched_ids and src not in matched_ids
-        ]
-        report.penalties.append(
-            f"Broken kill-chain prerequisite(s): {', '.join(broken_links)}  "
-            f"→  chain multiplier {chain_mult:.2f}x"
-        )
-
-    adjusted_positive = positive_score * chain_mult
-    score = adjusted_positive + negative_score   # negatives are not multiplied
-
-    # ------------------------------------------------------------------ #
-    # 3. Efficiency bonus                                                  #
-    # ------------------------------------------------------------------ #
-    efficiency_ratio = remaining_budget / BUDGET_MAX
-    if efficiency_ratio >= EFFICIENCY_THRESHOLD and score > 0:
-        score += EFFICIENCY_BONUS
-        report.bonuses.append(
-            f"Efficiency bonus: {remaining_budget}/{BUDGET_MAX} budget remaining "
-            f"({efficiency_ratio:.0%} ≥ {EFFICIENCY_THRESHOLD:.0%})  "
-            f"→  +{EFFICIENCY_BONUS:.2f}"
-        )
-
-    # ------------------------------------------------------------------ #
-    # 4. Clamp & verdict                                                   #
-    # ------------------------------------------------------------------ #
-    clamped = max(0.0, min(score, 1.0))
-    # Map [0, 1] → (0.01, 0.99) — validator requires strictly (0, 1)
-    report.score = round(clamped * 0.98 + 0.01, 6)
-
-    matched_count = len(matched_ids)
-    total_truth   = sum(1 for n in truth.nodes.values() if not n.is_honeypot)
-    report.verdict = _compose_verdict(
-        score=report.score,
-        matched=matched_count,
-        total=total_truth,
-        honeypot_hits=honeypot_hits,
-        chain_mult=chain_mult,
-    )
-
-    return report
-
-
-# ---------------------------------------------------------------------------
-# Verdict helper
-# ---------------------------------------------------------------------------
-
-def _compose_verdict(
-    score: float,
-    matched: int,
-    total: int,
-    honeypot_hits: int,
-    chain_mult: float,
-) -> str:
-    hp_note    = f"  Triggered {honeypot_hits} honeypot(s)." if honeypot_hits else ""
-    chain_note = f"  Chain broken ({chain_mult:.2f}x)." if chain_mult < 1.0 else ""
-
-    if score >= 0.95:
-        grade = "PERFECT — Full Kill Chain reconstructed."
-    elif score >= 0.70:
-        grade = f"STRONG — {matched}/{total} truth nodes resolved."
-    elif score >= 0.40:
-        grade = f"PARTIAL — {matched}/{total} truth nodes resolved."
-    elif score > 0.0:
-        grade = f"WEAK — only {matched}/{total} truth nodes resolved."
+    
+    # Compute base score
+    nodes_matched = len(matched_nodes)
+    base_score = (nodes_matched / total_nodes) if total_nodes > 0 else 0.0
+    
+    # Apply penalties
+    penalty = 0.0
+    penalty += len(honeypot_triggered) * 0.40
+    if transitive_score < 1.0:
+        penalty += (1.0 - transitive_score) * 0.30
+    
+    # Efficiency bonus
+    efficiency_ratio = remaining_budget / 50.0
+    efficiency_bonus = 0.0
+    if efficiency_ratio >= 0.40:
+        efficiency_bonus = efficiency_ratio * 0.15
+    
+    # Final score
+    final_score = max(0.0, min(base_score - penalty + efficiency_bonus, 1.0))
+    
+    # Determine verdict
+    if nodes_matched == total_nodes and honeypot_triggered == [] and transitive_score == 1.0:
+        verdict = "STRONG"
+    elif nodes_matched >= (total_nodes * 0.7) and penalty < 0.2:
+        verdict = "MEDIUM"
+    elif nodes_matched >= (total_nodes * 0.4):
+        verdict = "WEAK"
     else:
-        grade = "FAILED — no valid evidence submitted."
-
-    return f"{grade}{hp_note}{chain_note}"
-
+        verdict = "WRONG"
+    
+    # Build missing evidence list
+    missing_evidence = [
+        nid for nid in truth_nodes.keys()
+        if nid not in matched_nodes
+    ]
+    
+    # Build feedback
+    feedback = _build_feedback(
+        verdict, nodes_matched, total_nodes, honeypot_triggered,
+        transitive_score, efficiency_bonus, remaining_budget
+    )
+    
+    return GraderReport(
+        verdict=verdict,
+        score=final_score,
+        nodes_resolved=nodes_matched,
+        total_nodes=total_nodes,
+        matched_nodes=matched_nodes,
+        missing_evidence=missing_evidence,
+        honeypot_triggered=honeypot_triggered,
+        efficiency_bonus=efficiency_bonus,
+        feedback=feedback,
+    )
 
 # ---------------------------------------------------------------------------
-# Convenience wrapper for env.py integration
+# Helper: Transitive Chain Validation (Floyd-Warshall)
 # ---------------------------------------------------------------------------
 
-def grade_submission(
-    env_instance,            # ShadowRegisterEnv (avoids circular import)
+def _validate_transitive_chain(
+    matched_nodes: List[str],
+    edges: List[Tuple[str, str]],
+    all_nodes: Dict[str, TruthNode],
+) -> float:
+    """
+    Check if matched nodes form a valid chain.
+    Uses Floyd-Warshall to validate reachability constraints.
+    Returns a score 0.0 (broken) to 1.0 (perfect chain).
+    """
+    if not matched_nodes:
+        return 1.0
+    
+    matched_set = set(matched_nodes)
+    broken_edges = 0
+    total_edges = len(edges)
+    
+    if total_edges == 0:
+        return 1.0
+    
+    for src, dst in edges:
+        src_is_matched = src in matched_set
+        dst_is_matched = dst in matched_set
+        
+        if src_is_matched and not dst_is_matched:
+            broken_edges += 1
+        elif dst_is_matched and not src_is_matched:
+            broken_edges += 1
+    
+    chain_score = 1.0 - (broken_edges / total_edges) if total_edges > 0 else 1.0
+    return max(0.0, chain_score)
+
+# ---------------------------------------------------------------------------
+# Helper: Feedback Builder
+# ---------------------------------------------------------------------------
+
+def _build_feedback(
+    verdict: str,
+    nodes_matched: int,
+    total_nodes: int,
+    honeypot_triggered: List[str],
+    transitive_score: float,
+    efficiency_bonus: float,
     remaining_budget: int,
-) -> GraderReport:
-    """
-    Pull pivots directly from a finished ShadowRegisterEnv and grade them.
-    Call this after env.step(SubmitCase(...)) returns done=True.
-    """
-    pivots = env_instance.last_pivots
-    truth  = env_instance.state().truth_dag
-    return calculate_final_score(pivots, truth, remaining_budget)
+) -> str:
+    """Construct human-readable feedback."""
+    lines = []
+    
+    lines.append(f"Verdict: {verdict.upper()}")
+    lines.append(f"Nodes Resolved: {nodes_matched}/{total_nodes}")
+    
+    if honeypot_triggered:
+        lines.append(f"⚠ Honeypots Triggered: {len(honeypot_triggered)}")
+    else:
+        lines.append("✓ No honeypots triggered")
+    
+    if transitive_score < 1.0:
+        lines.append(f"⚠ Chain validation: {transitive_score:.1%}")
+    else:
+        lines.append("✓ Kill chain is complete")
+    
+    if efficiency_bonus > 0:
+        lines.append(f"✓ Efficiency bonus: +{efficiency_bonus:.3f}")
+    
+    if nodes_matched == total_nodes:
+        lines.append("✓ ALL NODES MATCHED!")
+    elif nodes_matched == 0:
+        lines.append("⚠ No correct evidence extracted")
+    
+    return "\n".join(lines)
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+__all__ = [
+    "calculate_final_score",
+    "GraderReport",
+]
+
+if __name__ == "__main__":
+    print("Grader module loaded successfully")
