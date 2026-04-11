@@ -1,0 +1,107 @@
+===== FILE: env.py =====
+Location: Lines 98-111 (in __init__ method)
+
+BEFORE:
+    def __init__(self, internal_state: InternalState) -> None:
+        self._master_state = internal_state   # never mutated after init
+        self._state: InternalState            # working copy reset() builds
+        self._obs: ForensicObs
+        self._milestones_hit: set             # artifact paths already rewarded
+        self._episode_reward: float
+        self._done: bool
+
+AFTER:
+    def __init__(self, internal_state: InternalState) -> None:
+        self._master_state = internal_state   # never mutated after init
+        self._state: InternalState            # working copy reset() builds
+        self._obs: ForensicObs
+        self._milestones_hit: set             # artifact paths already rewarded
+        self._episode_reward: float
+        self._done: bool
+        
+        # Attach grader for Phase 2 validator discovery
+        from grader import calculate_final_score
+        self._grader = calculate_final_score
+
+---
+
+Location: Lines 428-443 (new @property added)
+
+ADDED:
+    @property
+    def grader(self):
+        """
+        Expose the grader function attached to this environment.
+        
+        Required by Phase 2 OpenEnv validators to verify grader is available.
+        Returns the calculate_final_score function from grader module.
+        
+        Usage
+        -----
+            report = env.grader(
+                pivots=pivots,
+                truth=env.state().truth_dag,
+                remaining_budget=50
+            )
+        """
+        return getattr(self, "_grader", None)
+
+===== FILE: schema.py =====
+Location: Lines 90-95
+
+BEFORE:
+class TruthDAG(BaseModel):
+    """The 'Answer Key' for the scenario."""
+    scenario_name: str
+    seed: int
+    nodes: Dict[str, TruthNode]
+    edges: List[tuple[str, str]] # list of (from_node, to_node) connections
+
+AFTER:
+class TruthDAG(BaseModel):
+    """The 'Answer Key' for the scenario."""
+    scenario_name: str
+    seed: int
+    nodes: Dict[str, TruthNode]
+    edges: List[List[str]]  # list of [from_node, to_node] connections
+                            # (changed from tuple for better JSON compatibility)
+
+===== FILE: worldGen.py =====
+Location 1: Line 462 (in _build_easy function)
+
+BEFORE:
+        edges=[("A", "B")],
+
+AFTER:
+        edges=[["A", "B"]],
+
+---
+
+Location 2: Line 632 (in _build_medium function)
+
+BEFORE:
+        edges=[("A", "B"), ("B", "C")],
+
+AFTER:
+        edges=[["A", "B"], ["B", "C"]],
+
+---
+
+Location 3: Line 851 (in _build_hard function)
+
+BEFORE:
+        edges=[("A", "B"), ("B", "C")],
+
+AFTER:
+        edges=[["A", "B"], ["B", "C"]],
+
+===== SUMMARY =====
+Total files modified: 3
+Total lines changed: ~20
+
+Key Changes:
+1. env.py: Added grader attribute initialization and property exposure
+2. schema.py: Changed TruthDAG.edges type from List[tuple] to List[List[str]]
+3. worldGen.py: Updated 3 edge definitions to use lists instead of tuples
+
+All changes are minimal, focused, and backward compatible.

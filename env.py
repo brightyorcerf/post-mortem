@@ -102,6 +102,10 @@ class ShadowRegisterEnv:
         self._milestones_hit: set             # artifact paths already rewarded
         self._episode_reward: float
         self._done: bool
+        
+        # Attach grader for Phase 2 validator discovery
+        from grader import calculate_final_score
+        self._grader = calculate_final_score
 
     def reset(self) -> StepResult:
         """
@@ -420,3 +424,21 @@ class ShadowRegisterEnv:
     def last_pivots(self) -> list[ForensicPivot]:
         """Retrieve the pivots from the most recent SubmitCase action."""
         return getattr(self, "_last_pivots", [])
+
+    @property
+    def grader(self):
+        """
+        Expose the grader function attached to this environment.
+        
+        Required by Phase 2 OpenEnv validators to verify grader is available.
+        Returns the calculate_final_score function from grader module.
+        
+        Usage
+        -----
+            report = env.grader(
+                pivots=pivots,
+                truth=env.state().truth_dag,
+                remaining_budget=50
+            )
+        """
+        return getattr(self, "_grader", None)

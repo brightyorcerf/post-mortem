@@ -459,7 +459,7 @@ def _build_easy(rng: np.random.RandomState, seed: int) -> InternalState:
                 weight=0.0,
             ),
         },
-        edges=[("A", "B")],
+        edges=[["A", "B"]],
     )
 
     return InternalState(filesystem=fs, truth_dag=dag)
@@ -629,7 +629,7 @@ def _build_medium(rng: np.random.RandomState, seed: int) -> InternalState:
                 weight=0.0,
             ),
         },
-        edges=[("A", "B"), ("B", "C")],
+        edges=[["A", "B"], ["B", "C"]],
     )
 
     return InternalState(filesystem=fs, truth_dag=dag)
@@ -848,7 +848,7 @@ SRC=10.99.0.{int(rng.randint(1,254))} DST=10.0.0.1 PROTO=UDP SPT=53 DPT=53
                 weight=0.0,
             ),
         },
-        edges=[("A", "B"), ("B", "C")],
+        edges=[["A", "B"], ["B", "C"]],
     )
 
     return InternalState(filesystem=fs, truth_dag=dag)

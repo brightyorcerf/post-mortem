@@ -92,7 +92,8 @@ class TruthDAG(BaseModel):
     scenario_name: str
     seed: int
     nodes: Dict[str, TruthNode]
-    edges: List[tuple[str, str]] # list of (from_node, to_node) connections
+    edges: List[List[str]]  # list of [from_node, to_node] connections
+                            # (changed from tuple for better JSON compatibility)
 
 # --- ENVIRONMENT STATE (Internal Only) ---
 
