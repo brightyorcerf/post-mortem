@@ -84,7 +84,7 @@ def log_end(
     success_str = "true" if success else "false"
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
-        f"[END] success={success_str} steps={steps}"
+        f"[END] success={success_str} steps={steps} score={score:.2f}"
         f" rewards={rewards_str}",
         flush=True,
     )
@@ -353,10 +353,10 @@ def main(task: str, seed: int, max_steps: int) -> None:
         except Exception as e:
             print(f"[DEBUG] Client close error: {e}", flush=True)
 
-        # Clamp score to [0.0, 1.0] then map to (0.01, 0.99)
+        # Clamp score to [0.0, 1.0] then map to (0.05, 0.95)
         # Validator requires strictly (0, 1) — not 0.0 and not 1.0
         score = max(0.0, min(score, 1.0))
-        score = score * 0.98 + 0.01
+        score = score * 0.90 + 0.05
         log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
 
 
