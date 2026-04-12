@@ -66,7 +66,7 @@ READ_WINDOW          = 1000          # characters per Read chunk
 REWARD_MILESTONE     = +0.20         # first Read/Tag of a critical-path artifact
 REWARD_STEP_COST     = -0.05         # per-action analytical tax
 REWARD_HONEYPOT      = -0.40         # tagging a honeypot file
-REWARD_RESOLUTION    = +1.00         # correct SubmitCase
+REWARD_RESOLUTION    = +0.95         # correct SubmitCase (strict (0,1): not 1.0)
 
 EFFICIENCY_THRESHOLD = 0.40          # fraction of budget remaining for bonus
 EFFICIENCY_BONUS     = +0.10

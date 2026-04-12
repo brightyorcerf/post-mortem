@@ -268,8 +268,8 @@ def calculate_final_score(
     # 4. Clamp & verdict                                                   #
     # ------------------------------------------------------------------ #
     clamped = max(0.0, min(score, 1.0))
-    # Map [0, 1] → (0.01, 0.99) — validator requires strictly (0, 1)
-    report.score = round(clamped * 0.98 + 0.01, 6)
+    # Map [0, 1] → (0.05, 0.95) — validator requires strictly (0, 1)
+    report.score = round(clamped * 0.90 + 0.05, 6)
 
     matched_count = len(matched_ids)
     total_truth   = sum(1 for n in truth.nodes.values() if not n.is_honeypot)
