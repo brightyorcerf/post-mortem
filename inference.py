@@ -85,7 +85,7 @@ def log_end(
     rewards_str = ",".join(f"{r:.2f}" for r in rewards)
     print(
         f"[END] success={success_str} steps={steps}"
-        f" score={score:.3f} rewards={rewards_str}",
+        f" rewards={rewards_str}",
         flush=True,
     )
 
