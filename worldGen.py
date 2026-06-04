@@ -795,13 +795,16 @@ SRC=10.99.0.{int(rng.randint(1,254))} DST=10.0.0.1 PROTO=UDP SPT=53 DPT=53
         f"mtime={_iso(original_compile_date)} vs ctime={_iso(actual_inject_time)}"
     )
 
-    fs: Dict[str, VirtualFile] = {
+    task_files: Dict[str, VirtualFile] = {
         "/usr/bin/login":     _vf("/usr/bin/login",     trojan_content,  login_meta),
         "/var/log/dpkg.log":  _vf("/var/log/dpkg.log",  dpkg_content,    dpkg_meta),
         "/usr/bin/sudo":      _vf("/usr/bin/sudo",      sudo_content,    sudo_meta),
         "/var/log/fw.log":    _vf("/var/log/fw.log",    fw_log_content,  fw_meta),
     }
-    fs.update(_generate_noise(rng, base_time))
+    # Generate noise first, then overlay task-specific files so the dpkg.log
+    # with the login-package cross-reference evidence is not overwritten.
+    fs = _generate_noise(rng, base_time)
+    fs.update(task_files)
 
     dag = TruthDAG(
         scenario_name="timestomp_proxy",

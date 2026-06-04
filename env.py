@@ -66,7 +66,7 @@ READ_WINDOW          = 1000          # characters per Read chunk
 REWARD_MILESTONE     = +0.20         # first Read/Tag of a critical-path artifact
 REWARD_STEP_COST     = -0.05         # per-action analytical tax
 REWARD_HONEYPOT      = -0.40         # tagging a honeypot file
-REWARD_RESOLUTION    = +0.95         # correct SubmitCase (strict (0,1): not 1.0)
+REWARD_RESOLUTION    = +1.00         # correct SubmitCase — proportional to grader score
 
 EFFICIENCY_THRESHOLD = 0.40          # fraction of budget remaining for bonus
 EFFICIENCY_BONUS     = +0.10
@@ -392,16 +392,29 @@ class ShadowRegisterEnv:
         # Store pivots in info so the grader can retrieve them
         self._last_pivots = pivots
 
+        # Grade immediately to emit a meaningful resolution reward for RL training.
+        # remaining_budget is decremented in step() AFTER the handler returns,
+        # so we subtract 1 here to reflect the post-submit state.
+        remaining_after = max(self._obs.remaining_budget - 1, 0)
+        report = self._grader(
+            pivots=pivots,
+            truth=self._state.truth_dag,
+            remaining_budget=remaining_after,
+        )
+        # Resolution reward: grader score × REWARD_RESOLUTION scales in [0, 1]
+        step_reward = report.score * REWARD_RESOLUTION
+
         view = (
             f"SUBMIT: Case filed with {len(pivots)} pivot(s).\n"
-            f"Episode terminated. Awaiting grader evaluation.\n"
+            f"Grader score: {report.score:.4f} | {report.verdict}\n"
+            f"Episode terminated.\n"
             + "\n".join(
                 f"  [{i+1}] {p.artifact} → {p.ioc} ({p.type}) | {p.reason}"
                 for i, p in enumerate(pivots)
             )
         )
-        log = f"SubmitCase: {len(pivots)} pivots filed."
-        return 0.0, view, None, log
+        log = f"SubmitCase: {len(pivots)} pivots filed. Score: {report.score:.4f}"
+        return step_reward, view, None, log
 
     # ------------------------------------------------------------------
     # Internal helpers
