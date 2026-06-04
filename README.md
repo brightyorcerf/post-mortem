@@ -280,22 +280,7 @@ python3 tests/testSpec.py
 
 ---
 
-## 6 · Preliminary Baseline Performance
-
-The following results represent zero-shot performance using a ReAct-style prompting strategy. All evaluations were conducted at `temperature=0` to minimize variance, though model-side non-determinism remains.
-
-| Agent / Model | `noisy_entry` (Easy) | `stealthy_persistence` (Mid) | `timestomp_proxy` (Hard) |
-| :--- | :---: | :---: | :---: |
-| **Oracle (Hardcoded)** | 1.00 | 1.00 | 1.00 |
-| **GPT-4o** | 0.94 | 0.58 | 0.14 |
-| **GPT-4o-mini** | 0.88 | 0.32 | 0.04 |
-| **Random Baseline** | 0.02 | 0.00 | 0.00 |
-
-The significant performance decay in `timestomp_proxy` highlights a specific "reasoning gap" in current LLMs regarding temporal metadata analysis. While models successfully identify the tampered binary, they frequently fail to provide the exact `mtime/ctime` discrepancy proof required by the TruthDAG, resulting in reduced partial credit.
-
----
-
-## 7 · Architecture Overview
+## 6 · Architecture Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────┐

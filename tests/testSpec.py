@@ -72,7 +72,7 @@ def verify_openenv_compliance():
 
     # Check openenv.yaml exists
     checks_total += 1
-    yaml_path = root_dir / "OpenEnv.yaml"
+    yaml_path = root_dir / "openenv.yaml"
     if yaml_path.exists():
         pass_check("openenv.yaml file exists")
         checks_passed += 1
