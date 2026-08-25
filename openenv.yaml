@@ -72,7 +72,9 @@ observation_space:
       description: "Current terminal output window (1000-char slice)."
     working_directory:
       type: string
-      description: "Current filesystem location."
+      description: >
+        Filesystem root context. Always "/" — paths are absolute and there is
+        no cd action, so this is a constant, not navigable state.
     artifact_metadata:
       type: object
       nullable: true
@@ -140,14 +142,22 @@ action_space:
 
 # ── Reward ───────────────────────────────────────────────────────────────────
 reward:
-  range: [0.0, 1.0]
+  # Final grader score (info.score, and task reward_range above).
+  score_range: [0.0, 1.0]
+  # Per-step reward returned by /step. The analytical cost applies to EVERY
+  # step, so single steps are usually negative and episode sums routinely are
+  # too: min = honeypot_penalty + analytical_cost, max = resolution + cost.
+  range: [-0.45, 0.95]
   components:
     - name: evidence_milestone
       value: +0.20
-      trigger: "First Read of a critical-path artifact."
+      trigger: "First Read OR Inspect of a critical-path artifact."
     - name: analytical_cost
       value: -0.05
       trigger: "Every action (discourages brute-force reading)."
+    - name: evidence_confirmed
+      value: +0.10
+      trigger: "First Tag of a value matching a non-honeypot TruthDAG IOC."
     - name: honeypot_penalty
       value: -0.40
       trigger: "Tagging an artifact marked is_honeypot=True."
@@ -156,7 +166,7 @@ reward:
       trigger: "SubmitCase with correct ForensicPivots matching TruthDAG."
     - name: efficiency_bonus
       value: +0.10
-      trigger: "SubmitCase with ≥ 40% budget remaining."
+      trigger: "SubmitCase with ≥ 40% budget remaining and a score below the 1.0 cap."
 
 # ── Reproducibility ──────────────────────────────────────────────────────────
 reproducibility:
@@ -176,6 +186,12 @@ environment_variables:
   HF_TOKEN:
     description: "Hugging Face API token."
     required: true
+  GRADER_TOKEN:
+    description: >
+      Shared secret that unlocks GET /state. Unset (the default) closes the
+      route entirely — it returns the TruthDAG answer key on the same HTTP
+      surface the agent under evaluation talks to.
+    required: false
 
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 endpoints:
@@ -199,5 +215,7 @@ endpoints:
   state:
     path: /state
     method: GET
-    description: "Returns full InternalState including TruthDAG. Grader use only."
+    description: >
+      Returns full InternalState including TruthDAG. Grader use only.
+      403 unless GRADER_TOKEN is set server-side and sent as X-Grader-Token.
     returns: InternalState

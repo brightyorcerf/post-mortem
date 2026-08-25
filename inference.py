@@ -26,7 +26,6 @@ import json
 import os
 import re
 import sys
-import time
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
@@ -57,6 +56,18 @@ def log_start(*, task: str, env: str, model: str) -> None:
     print(f"[START] task={task} env={env} model={model}", flush=True)
 
 
+def _token(value: str) -> str:
+    """
+    Collapse a value to a single whitespace-free token.
+
+    The [STEP] grammar is space-separated `key=value` pairs, so any embedded
+    whitespace (a multi-word Search query, a SubmitCase `reason`) silently
+    breaks every field after it.  Underscores keep the line parseable and
+    the value readable.
+    """
+    return "_".join(str(value).split()) or "null"
+
+
 def log_step(
     *,
     step:   int,
@@ -66,9 +77,9 @@ def log_step(
     error:  Optional[str],
 ) -> None:
     done_str  = "true" if done else "false"
-    error_str = error if error is not None else "null"
+    error_str = _token(error) if error is not None else "null"
     print(
-        f"[STEP] step={step} action={action} reward={reward:.2f}"
+        f"[STEP] step={step} action={_token(action)} reward={reward:.2f}"
         f" done={done_str} error={error_str}",
         flush=True,
     )
@@ -197,7 +208,7 @@ def get_model_action(
 
     user_msg = (
         f"=== Step {step} ===\n"
-        f"Budget consumed: {step - 1} / 40\n"
+        f"Budget consumed: {step - 1} / {MAX_STEPS}\n"
         f"Last reward: {last_reward:+.3f}\n\n"
         f"Recent history:\n{history_block}\n\n"
         f"Current terminal output:\n{current_view}\n\n"
@@ -272,6 +283,11 @@ def main(task: str, seed: int, max_steps: int) -> None:
         )
         sys.exit(1)
 
+    if not HF_TOKEN:
+        print("[ERROR] HF_TOKEN is not set. Export it before running inference.",
+              file=sys.stderr)
+        sys.exit(1)
+
     client_llm = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
 
     history:     List[str]   = []
@@ -279,6 +295,7 @@ def main(task: str, seed: int, max_steps: int) -> None:
     steps_taken: int         = 0
     score:       float       = 0.0
     success:     bool        = False
+    graded:      bool        = False   # did the server return a grader report?
 
     log_start(task=task, env=BENCHMARK, model=MODEL_NAME)
 
@@ -323,8 +340,9 @@ def main(task: str, seed: int, max_steps: int) -> None:
             rewards.append(reward)
             steps_taken = step
 
-            log_step(step=step, action=action_str, reward=reward,
-                     done=done, error=error)
+            log_step(step=step, action=action_dict.get("action", "?"),
+                     reward=reward, done=done, error=error)
+            print(f"[DEBUG] step={step} payload={action_str}", flush=True)
 
             history.append(
                 f"Step {step}: {action_dict.get('action','?')} → reward {reward:+.3f}"
@@ -334,6 +352,7 @@ def main(task: str, seed: int, max_steps: int) -> None:
                 # Pull grader score if server attached it
                 grader = client_env.last_grader_report
                 if grader:
+                    graded  = True
                     score   = float(grader.get("score", 0.0))
                     success = score >= SUCCESS_SCORE_THRESHOLD
                     print(
@@ -342,8 +361,11 @@ def main(task: str, seed: int, max_steps: int) -> None:
                     )
                 break
 
-        # Fallback normalisation if server didn't return grader report
-        if not success and rewards:
+        # Fallback normalisation ONLY if the server never returned a grader
+        # report.  The grader score is authoritative — a partial-credit run
+        # (score < SUCCESS_SCORE_THRESHOLD) must not be overwritten by the
+        # step-cost-dominated reward sum.
+        if not graded and rewards:
             score   = min(max(sum(rewards) / MAX_TOTAL_REWARD, 0.0), 1.0)
             success = score >= SUCCESS_SCORE_THRESHOLD
 
@@ -372,9 +394,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--task",
-        default="all",
+        default="noisy_entry",
         choices=["all", "noisy_entry", "stealthy_persistence", "timestomp_proxy"],
-        help="Which scenario to run (default: all — runs every task)",
+        help="Which scenario to run (default: noisy_entry). "
+             "'all' runs every task and emits one [START]/[END] block per task, "
+             "which single-run log parsers do not expect.",
     )
     parser.add_argument(
         "--seed",

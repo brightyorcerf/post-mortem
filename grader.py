@@ -24,7 +24,7 @@ GraderReport fields
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from schema import ForensicPivot, IOCType, TruthDAG, TruthNode
 
@@ -36,7 +36,16 @@ HONEYPOT_PENALTY      = -0.40
 EFFICIENCY_BONUS      = +0.10
 EFFICIENCY_THRESHOLD  = 0.40    # fraction of BUDGET_MAX remaining
 BUDGET_MAX            = 50      # must match env.py
+CHAIN_MULTIPLIER_FLOOR = 0.25   # partial credit floor for broken kill chains
 IOC_FUZZY_STRIP_CHARS = " \t\r\n\"'`"  # strip these before comparison
+
+# Substring matching exists so the agent can submit one timestamp out of a
+# "mtime=X vs ctime=Y" proof, or a slightly clipped base64 payload.  Without a
+# floor it also accepts "" (a substring of everything) and any single
+# character, which is free credit for zero forensic work.  A partial answer
+# must be both long enough to be distinctive and a real fraction of the truth.
+SUBSTRING_MIN_CHARS = 8
+SUBSTRING_MIN_RATIO = 0.25
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +94,16 @@ def _normalise(ioc: str) -> str:
     return ioc.strip(IOC_FUZZY_STRIP_CHARS).lower()
 
 
+def _is_distinctive_substring(sub: str, exp: str) -> bool:
+    """
+    True when `sub` is a partial answer worth credit: contained in `exp`,
+    at least SUBSTRING_MIN_CHARS long, and at least SUBSTRING_MIN_RATIO of it.
+    """
+    if len(sub) < SUBSTRING_MIN_CHARS or len(sub) < len(exp) * SUBSTRING_MIN_RATIO:
+        return False
+    return sub in exp
+
+
 def _ioc_matches(submitted: str, expected: str, ioc_type: IOCType) -> bool:
     """
     Type-aware IOC comparison.
@@ -101,9 +120,13 @@ def _ioc_matches(submitted: str, expected: str, ioc_type: IOCType) -> bool:
     sub = _normalise(submitted)
     exp = _normalise(expected)
 
+    if not sub:
+        return False
+
     if ioc_type == IOCType.COMMAND_STRING:
-        # Accept if the submitted value is contained in the expected (or vice-versa)
-        return sub in exp or exp in sub
+        # exp in sub is safe: you cannot produce it without knowing the answer.
+        # sub in exp is the partial-credit path and needs the distinctiveness floor.
+        return exp in sub or _is_distinctive_substring(sub, exp)
 
     if ioc_type == IOCType.FILE_PATH:
         # Tolerate missing leading slash
@@ -111,7 +134,7 @@ def _ioc_matches(submitted: str, expected: str, ioc_type: IOCType) -> bool:
 
     if ioc_type == IOCType.EVENT_TIMESTAMP:
         # Agent may submit the full discrepancy string or just one of the timestamps
-        return sub == exp or sub in exp
+        return sub == exp or _is_distinctive_substring(sub, exp)
 
     # Default: exact match
     return sub == exp
@@ -141,14 +164,14 @@ def _validate_chain(
     If an agent matched node B but NOT node A (where A→B), the chain is
     broken and node B's weight contribution is halved.
 
-    Returns a chain-validity multiplier between 0.5 and 1.0.
+    Returns a chain-validity multiplier in [CHAIN_MULTIPLIER_FLOOR, 1.0].
     """
     multiplier = 1.0
     for (src, dst) in truth.edges:
         # If dst was matched but src was not → broken chain
         if dst in matched_node_ids and src not in matched_node_ids:
             multiplier *= 0.5  # halve for each broken link
-    return max(multiplier, 0.25)  # floor at 25% — partial credit
+    return max(multiplier, CHAIN_MULTIPLIER_FLOOR)
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +202,6 @@ def calculate_final_score(
     remaining_budget : How many budget units remain when SubmitCase was called
     """
 
-    _supported = ['noisy_entry', 'stealthy_persistence', 'timestomp_proxy']
     report = GraderReport(score=0.0)
 
     if not pivots:
@@ -257,12 +279,18 @@ def calculate_final_score(
     # ------------------------------------------------------------------ #
     efficiency_ratio = remaining_budget / BUDGET_MAX
     if efficiency_ratio >= EFFICIENCY_THRESHOLD and score > 0:
-        score += EFFICIENCY_BONUS
-        report.bonuses.append(
-            f"Efficiency bonus: {remaining_budget}/{BUDGET_MAX} budget remaining "
-            f"({efficiency_ratio:.0%} ≥ {EFFICIENCY_THRESHOLD:.0%})  "
-            f"→  +{EFFICIENCY_BONUS:.2f}"
-        )
+        # Report the bonus that was actually applied. A run already at the 1.0
+        # ceiling gains nothing, and claiming "+0.10" there made the breakdown
+        # disagree with the score it accompanied.
+        before   = max(0.0, min(score, 1.0))
+        score   += EFFICIENCY_BONUS
+        applied  = max(0.0, min(score, 1.0)) - before
+        if applied > 0:
+            report.bonuses.append(
+                f"Efficiency bonus: {remaining_budget}/{BUDGET_MAX} budget remaining "
+                f"({efficiency_ratio:.0%} ≥ {EFFICIENCY_THRESHOLD:.0%})  "
+                f"→  +{applied:.2f}"
+            )
 
     # ------------------------------------------------------------------ #
     # 4. Clamp & verdict                                                   #
@@ -309,20 +337,3 @@ def _compose_verdict(
         grade = "FAILED — no valid evidence submitted."
 
     return f"{grade}{hp_note}{chain_note}"
-
-
-# ---------------------------------------------------------------------------
-# Convenience wrapper for env.py integration
-# ---------------------------------------------------------------------------
-
-def grade_submission(
-    env_instance,            # ShadowRegisterEnv (avoids circular import)
-    remaining_budget: int,
-) -> GraderReport:
-    """
-    Pull pivots directly from a finished ShadowRegisterEnv and grade them.
-    Call this after env.step(SubmitCase(...)) returns done=True.
-    """
-    pivots = env_instance.last_pivots
-    truth  = env_instance.state().truth_dag
-    return calculate_final_score(pivots, truth, remaining_budget)

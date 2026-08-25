@@ -9,7 +9,7 @@ from schema import TruthDAG, TruthNode
 dummy_truth = TruthDAG(
     scenario_name="test",
     seed=1,
-    nodes={"A": TruthNode(node_id="A", required_artifact="a", expected_ioc="a", type="FILE_PATH", weight=1.0)},
+    nodes={"A": TruthNode(node_id="A", required_artifact="a", expected_ioc="a", type="PATH_TO_FILE", weight=1.0)},
     edges=[]
 )
 

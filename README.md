@@ -57,7 +57,7 @@ This TruthDAG acts as a Deterministic Oracle for the grader, providing the objec
  
 ### Determinism: σ=0 Across Runs
 
-All world generation routes through a single `numpy.RandomState` instance seeded at `reset()`. The same `(task, seed)` pair produces a byte-identical virtual filesystem, identical TruthDAG, and identical grader scores - verified across 100 iterations with zero variance. There is no wall-clock dependency, no external randomness. Reproducibility is mathematically guaranteed.
+All world generation routes through a single `numpy.RandomState` instance seeded in `generate_world(task, seed)`. The same `(task, seed)` pair produces a byte-identical virtual filesystem, identical TruthDAG, and identical grader scores - verified across 100 iterations with zero variance. There is no wall-clock dependency, no external randomness. Reproducibility is mathematically guaranteed.
 
 ---
 
@@ -83,7 +83,7 @@ After every action, the agent receives a strictly typed observation:
 ```python
 class ForensicObs(BaseModel):
     current_view:      str                     # 1000-char terminal output window
-    working_directory: str                     # Current filesystem location
+    working_directory: str                     # Always "/" (no cd action)
     artifact_metadata: Optional[FileMetadata]  # stat(1) data after Inspect
     tagged_evidence:   Dict[str, str]          # Accumulated evidence bag
     remaining_budget:  int                     # Actions left before termination (max: 50)
@@ -184,9 +184,9 @@ The grader (`grader.py`) is fully deterministic and operates in four phases:
 
 2. **Honeypot penalty**: Any pivot that matches a honeypot node subtracts **-0.40** from the score.
 
-3. **DAG chain validation**: If the agent matched node B but not its prerequisite A (where `A→B` is a DAG edge), the positive score is multiplied by **0.5x per broken link** (floored at 0.25x). This enforces Kill Chain coherence: random correct guesses are worth less than structured forensic reasoning.
+3. **DAG chain validation**: If the agent matched node B but not its prerequisite A (where `A→B` is a DAG edge), the positive score is multiplied by **0.5x per broken link** (floored at `CHAIN_MULTIPLIER_FLOOR` = 0.25x). This enforces Kill Chain coherence: random correct guesses are worth less than structured forensic reasoning.
 
-4. **Efficiency bonus**: If the agent retains **≥40% of the budget** (≥20 of 50 actions) at submission time and the score is positive, a **+0.10 bonus** is applied. This rewards analytical precision over brute-force exploration.
+4. **Efficiency bonus**: If the agent retains **≥40% of the budget** (≥20 of 50 actions) at submission time and the score is positive, a **+0.10 bonus** is applied, up to the 1.0 cap. A run already scoring 1.0 gains nothing — the bonus separates good runs from merely correct ones.
 
 The final score is clamped to `[0.0, 1.0]`.
 

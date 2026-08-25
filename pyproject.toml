@@ -7,9 +7,9 @@ dependencies = [
     "uvicorn",
     "pydantic",
     "openai",
+    "httpx",
     "numpy",
     "pyyaml",
-    "openenv-core>=0.2.0"
 ]
 
 [project.scripts]

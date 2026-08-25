@@ -14,7 +14,6 @@ The InternalState / TruthDAG is strictly internal.
 
 from __future__ import annotations
 
-import fnmatch
 import re
 from typing import Any, Dict, Optional
 
@@ -25,9 +24,7 @@ from schema import (
     ForensicObs,
     ForensicPivot,
     InternalState,
-    IOCType,
     SearchResult,
-    VirtualFile,
 )
 
 # ---------------------------------------------------------------------------
@@ -66,10 +63,11 @@ READ_WINDOW          = 1000          # characters per Read chunk
 REWARD_MILESTONE     = +0.20         # first Read/Tag of a critical-path artifact
 REWARD_STEP_COST     = -0.05         # per-action analytical tax
 REWARD_HONEYPOT      = -0.40         # tagging a honeypot file
+REWARD_TAG_HIT       = +0.10         # first tag of a genuine truth IOC
 REWARD_RESOLUTION    = +1.00         # correct SubmitCase — proportional to grader score
 
-EFFICIENCY_THRESHOLD = 0.40          # fraction of budget remaining for bonus
-EFFICIENCY_BONUS     = +0.10
+# NOTE: the efficiency bonus lives in grader.py — it applies to the final
+# score, not to any single step, so there is nothing to duplicate here.
 
 
 # ---------------------------------------------------------------------------
@@ -97,11 +95,15 @@ class ShadowRegisterEnv:
 
     def __init__(self, internal_state: InternalState) -> None:
         self._master_state = internal_state   # never mutated after init
-        self._state: InternalState            # working copy reset() builds
-        self._obs: ForensicObs
-        self._milestones_hit: set             # artifact paths already rewarded
-        self._episode_reward: float
-        self._done: bool
+        # Usable before reset(): the grader and /state read truth_dag straight
+        # off a freshly constructed env.  reset() swaps in the working copy.
+        self._state: InternalState  = internal_state
+        self._obs: ForensicObs      = None
+        self._milestones_hit: set   = set()   # artifact paths already rewarded
+        self._tag_hits: set         = set()   # truth IOCs already credited
+        self._episode_reward: float = 0.0
+        self._done: bool            = False
+        self._last_pivots: list     = []
         
         # Attach grader for Phase 2 validator discovery
         from grader import calculate_final_score
@@ -116,6 +118,7 @@ class ShadowRegisterEnv:
         import copy
         self._state         = copy.deepcopy(self._master_state)
         self._milestones_hit: set = set()
+        self._tag_hits: set = set()
         self._episode_reward: float = 0.0
         self._done          = False
         self._last_pivots   = []     # wipe stale pivots from prior episode
@@ -153,21 +156,7 @@ class ShadowRegisterEnv:
         }.get(action.action)
 
         if handler is None:
-            # Unknown actions still cost budget — budget decrements for ALL steps
-            self._obs = ForensicObs(
-                **{**self._obs.model_dump(),
-                   "current_view": f"ERROR: Unknown action type: {action.action}",
-                   "last_action_log": f"Unknown action type: {action.action}",
-                   "remaining_budget": self._obs.remaining_budget - 1}
-            )
-            total_reward = REWARD_STEP_COST
-            self._episode_reward += total_reward
-            if self._obs.remaining_budget <= 0:
-                self._done = True
-            return StepResult(
-                observation=self._obs, reward=total_reward, done=self._done,
-                info={"error": f"Unknown action type: {action.action}"},
-            )
+            return self.step_rejected(f"Unknown action type: {action.action}")
 
         step_reward, view, meta, log_msg = handler(action)
 
@@ -200,6 +189,34 @@ class ShadowRegisterEnv:
             reward=total_reward,
             done=self._done,
             info={"episode_reward_so_far": self._episode_reward},
+        )
+
+    def step_rejected(self, reason: str) -> StepResult:
+        """
+        Charge a budget unit for an action the env refused to run.
+
+        Covers both unknown action types and payloads that fail schema
+        validation at the HTTP boundary.  Without this, a client that emits
+        malformed JSON steps forever for free and the budget stops being a
+        bound on the episode.
+        """
+        if self._done:
+            return StepResult(
+                observation=self._obs, reward=0.0, done=True,
+                info={"error": "Episode already finished. Call reset()."},
+            )
+        self._obs = ForensicObs(
+            **{**self._obs.model_dump(),
+               "current_view":     f"ERROR: {reason}"[:READ_WINDOW],
+               "last_action_log":  reason,
+               "remaining_budget": max(self._obs.remaining_budget - 1, 0)}
+        )
+        self._episode_reward += REWARD_STEP_COST
+        if self._obs.remaining_budget <= 0:
+            self._done = True
+        return StepResult(
+            observation=self._obs, reward=REWARD_STEP_COST,
+            done=self._done, info={"error": reason},
         )
 
     def state(self) -> InternalState:
@@ -273,17 +290,20 @@ class ShadowRegisterEnv:
             return 0.0, f"INSPECT: No such file: {path}", None, f"Inspect failed: {path} not found."
 
         m = vf.metadata
+        # Field names are spelled out (mtime/atime/ctime) so the vocabulary the
+        # grader expects for a timestamp-discrepancy IOC is visible to the agent.
         view = (
             f"File: {path}\n"
             f"  Size:        {m.size} bytes\n"
             f"  Permissions: {m.permissions}\n"
             f"  UID/GID:     {m.uid}/{m.gid}\n"
-            f"  Modify:      {m.mtime}\n"
-            f"  Access:      {m.atime}\n"
-            f"  Change:      {m.ctime}\n"
+            f"  Modify (mtime): {m.mtime}\n"
+            f"  Access (atime): {m.atime}\n"
+            f"  Change (ctime): {m.ctime}\n"
         )
-        log  = f"Inspected metadata for {path}."
-        return 0.0, view, m, log
+        reward, note = self._milestone(path)
+        log  = f"Inspected metadata for {path}.{note}"
+        return reward, view, m, log
 
     def _handle_read(
         self, action: ForensicAction
@@ -304,25 +324,26 @@ class ShadowRegisterEnv:
             view = f"READ {path}@{offset}: End of file (size={len(vf.content)})."
             return 0.0, view, vf.metadata, f"Read past EOF: {path}."
 
-        view = (
-            f"READ {path} [offset={offset}, +{len(chunk)} chars]\n"
-            f"{'─' * 60}\n"
-            f"{chunk}\n"
-            f"{'─' * 60}\n"
-            f"[EOF in {max(len(vf.content) - offset - len(chunk), 0)} chars]"
-        )
+        def _render(c: str) -> str:
+            return (
+                f"READ {path} [offset={offset}, +{len(c)} chars]\n"
+                f"{'─' * 60}\n"
+                f"{c}\n"
+                f"{'─' * 60}\n"
+                f"[EOF in {max(len(vf.content) - offset - len(c), 0)} chars]"
+            )
 
-        # Milestone: first read of a truth artifact
-        reward = 0.0
-        truth_paths = {n.required_artifact for n in self._state.truth_dag.nodes.values()
-                       if not n.is_honeypot}
-        if path in truth_paths and path not in self._milestones_hit:
-            self._milestones_hit.add(path)
-            reward = REWARD_MILESTONE
-            log = f"Read {path} — MILESTONE +{REWARD_MILESTONE:.2f}."
-        else:
-            log = f"Read {path} (offset={offset})."
+        # step() caps current_view at READ_WINDOW.  The frame (header, rules,
+        # EOF footer) counts against that cap, so an unadjusted chunk loses its
+        # tail silently and an agent paging by READ_WINDOW skips those bytes.
+        # Trim the chunk to fit, so the "+N chars" header is the true advance.
+        view = _render(chunk)
+        if len(view) > READ_WINDOW:
+            chunk = chunk[: max(len(chunk) - (len(view) - READ_WINDOW), 0)]
+            view  = _render(chunk)
 
+        reward, note = self._milestone(path)
+        log = f"Read {path} (offset={offset}).{note}"
         return reward, view, vf.metadata, log
 
     def _handle_tag(
@@ -351,11 +372,24 @@ class ShadowRegisterEnv:
             if n.is_honeypot
         }
 
+        truth_iocs = {
+            n.expected_ioc
+            for n in self._state.truth_dag.nodes.values()
+            if not n.is_honeypot
+        }
+
         reward = 0.0
         log_suffix = ""
         if value in honeypot_paths or value in honeypot_iocs:
             reward     = REWARD_HONEYPOT
             log_suffix = f" ⚠ HONEYPOT PENALTY {REWARD_HONEYPOT:.2f}"
+        elif value in truth_iocs and value not in self._tag_hits:
+            # Without this, Tag costs REWARD_STEP_COST and can only ever lose
+            # points, so the optimal policy is to never tag anything — which
+            # makes a documented first-class action dead. Credited once per IOC.
+            self._tag_hits.add(value)
+            reward     = REWARD_TAG_HIT
+            log_suffix = f" ✓ EVIDENCE CONFIRMED +{REWARD_TAG_HIT:.2f}"
 
         # Update the evidence bag (persists in observation)
         new_evidence = dict(self._obs.tagged_evidence)
@@ -419,6 +453,20 @@ class ShadowRegisterEnv:
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _milestone(self, path: str) -> tuple[float, str]:
+        """
+        Award REWARD_MILESTONE once per critical-path artifact, whichever
+        action surfaced it first.  Inspect is the whole point of the
+        timestomp task, so it earns credit exactly like Read.
+        """
+        truth_paths = {n.required_artifact
+                       for n in self._state.truth_dag.nodes.values()
+                       if not n.is_honeypot}
+        if path in truth_paths and path not in self._milestones_hit:
+            self._milestones_hit.add(path)
+            return REWARD_MILESTONE, f" MILESTONE +{REWARD_MILESTONE:.2f}."
+        return 0.0, ""
 
     def _welcome_banner(self) -> str:
         scenario = self._state.truth_dag.scenario_name

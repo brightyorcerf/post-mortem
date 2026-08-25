@@ -19,9 +19,9 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Optional
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from env import ShadowRegisterEnv, StepResult
 from grader import calculate_final_score
@@ -49,6 +49,8 @@ class _Session:
 
 _session = _Session()
 
+DEFAULT_TASK = "noisy_entry"
+
 
 def _require_env() -> ShadowRegisterEnv:
     if _session.env is None:
@@ -69,14 +71,15 @@ class ResetRequest(BaseModel):
     id: Optional[str] = None
     seed: int = 42
 
-    def resolve_task(self) -> str:
-        # Check standard SDK fields first, fallback to noisy_entry
-        t = self.task_id or self.task or self.id
-        return t if t else "noisy_entry"
+    def resolve_task(self) -> Optional[str]:
+        """Standard SDK fields first; None when the caller named no task."""
+        return self.task_id or self.task or self.id
 
 
 class StepRequest(BaseModel):
-    action: ForensicAction
+    # Deliberately untyped: a malformed action must be charged a budget unit by
+    # the env, not rejected with a 422 that costs the agent nothing.
+    action: Dict[str, Any] = {}
 
 
 def _serialise_result(result: StepResult) -> Dict[str, Any]:
@@ -122,9 +125,18 @@ def reset(req: Optional[ResetRequest] = Body(default=None)) -> JSONResponse:
         req = ResetRequest()
 
     requested_task = req.resolve_task()
-    if requested_task not in VALID_TASKS:
-        # Fallback to a valid task so the validator doesn't see a 422
-        requested_task = "noisy_entry"
+    if requested_task is None:
+        # No task named at all — the documented default. Keeps the bare-body
+        # validator probe working.
+        requested_task = DEFAULT_TASK
+    elif requested_task not in VALID_TASKS:
+        # A named-but-invalid task must NOT silently become the easy scenario:
+        # a typo would otherwise be graded against the wrong answer key.
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown task '{requested_task}'. "
+                   f"Valid tasks: {sorted(VALID_TASKS)}",
+        )
 
     world = generate_world(requested_task, req.seed)
     _session.env  = ShadowRegisterEnv(world)
@@ -149,7 +161,14 @@ def step(req: StepRequest) -> JSONResponse:
     included in the response under info.grader_report.
     """
     env = _require_env()
-    result = env.step(req.action)
+    try:
+        action = ForensicAction.model_validate(req.action)
+    except ValidationError as exc:
+        result = env.step_rejected(
+            f"Malformed action: {exc.error_count()} schema violation(s)."
+        )
+    else:
+        result = env.step(action)
     payload = _serialise_result(result)
 
     # Always attach grader report when episode ends (validator requires it)
@@ -173,11 +192,25 @@ def step(req: StepRequest) -> JSONResponse:
 
 
 @app.get("/state")
-def state() -> JSONResponse:
+def state(x_grader_token: Optional[str] = Header(default=None)) -> JSONResponse:
     """
     Return the full InternalState including TruthDAG.
-    GRADER / EVALUATOR USE ONLY — never pass this to the agent.
+
+    GRADER / EVALUATOR USE ONLY.  This is the answer key: it contains every
+    expected IOC and the is_honeypot flags.  The agent under evaluation talks
+    to this same HTTP surface, so the route is closed unless GRADER_TOKEN is
+    set in the environment and echoed back in the X-Grader-Token header.
     """
+    expected = os.getenv("GRADER_TOKEN")
+    if not expected:
+        raise HTTPException(
+            status_code=403,
+            detail="/state is disabled. Set GRADER_TOKEN in the server "
+                   "environment and send it as the X-Grader-Token header.",
+        )
+    if x_grader_token != expected:
+        raise HTTPException(status_code=403, detail="Invalid X-Grader-Token.")
+
     env = _require_env()
     raw = env.state().model_dump()
     return JSONResponse(raw)

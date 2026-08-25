@@ -112,16 +112,29 @@ def verify_three_tasks():
     """3. Minimum of Three Tasks with Agent Graders"""
     check_section("FN REQ 3: Three Tasks with Graders")
 
-    grader = (root_dir / "grader.py").read_text()
-    worldgen = (root_dir / "worldGen.py").read_text()
+    from grader import calculate_final_score
+    from schema import ForensicPivot
+    from worldGen import generate_world
 
+    grader = (root_dir / "grader.py").read_text()
     tasks = ["noisy_entry", "stealthy_persistence", "timestomp_proxy"]
 
+    # grader.py is task-agnostic — it scores whatever TruthDAG it is handed.
+    # Grepping it for task names only proved a hardcoded list existed, so check
+    # that each task actually grades: oracle answers score 1.0, nothing scores 0.
     for task in tasks:
-        if task in grader and task in worldgen:
-            pass_check(f"Task '{task}' has grader logic")
+        dag = generate_world(task, 42).truth_dag
+        oracle = [
+            ForensicPivot(artifact=n.required_artifact, ioc=n.expected_ioc,
+                          type=n.type, reason="oracle")
+            for n in dag.nodes.values() if not n.is_honeypot
+        ]
+        best  = calculate_final_score(oracle, dag, 50).score
+        worst = calculate_final_score([], dag, 50).score
+        if best == 1.0 and worst == 0.0:
+            pass_check(f"Task '{task}' grades correctly (oracle=1.0, empty=0.0)")
         else:
-            fail_check(f"Task '{task}' grader not found")
+            fail_check(f"Task '{task}' grader off: oracle={best}, empty={worst}")
 
     # Check for scoring in grader
     if "score" in grader and "calculate_final_score" in grader:

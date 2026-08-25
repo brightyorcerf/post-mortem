@@ -424,11 +424,14 @@ def _build_easy(rng: np.random.RandomState, seed: int) -> InternalState:
         size=len(decoy_content), uid=1000,
     )
 
-    fs: Dict[str, VirtualFile] = {
+    task_files: Dict[str, VirtualFile] = {
         "/var/log/auth.log":        _vf("/var/log/auth.log", auth_content, auth_meta),
         "/tmp/ssh_credentials.txt": _vf("/tmp/ssh_credentials.txt", decoy_content, decoy_meta),
     }
-    fs.update(_generate_noise(rng, base_time))
+    # Noise first, task artifacts overlaid — never let generated noise
+    # clobber a file the TruthDAG depends on.
+    fs = _generate_noise(rng, base_time)
+    fs.update(task_files)
 
     dag = TruthDAG(
         scenario_name="noisy_entry",
@@ -452,9 +455,12 @@ def _build_easy(rng: np.random.RandomState, seed: int) -> InternalState:
             ),
             "HONEY_1": TruthNode(
                 node_id="HONEY_1",
+                # NOT a username: "ubuntu" is a legitimate account in
+                # /etc/passwd and half the syslog noise, so it penalised
+                # correct analysis. The decoy path is unique to the decoy.
                 required_artifact="/tmp/ssh_credentials.txt",
-                expected_ioc="ubuntu",
-                type=IOCType.USER_ACCOUNT,
+                expected_ioc="/tmp/ssh_credentials.txt",
+                type=IOCType.FILE_PATH,
                 is_honeypot=True,
                 weight=0.0,
             ),
@@ -582,7 +588,7 @@ def _build_medium(rng: np.random.RandomState, seed: int) -> InternalState:
     honey_meta = _meta(honey_time, honey_time, honey_time,
                        size=len(honeypot_content), uid=33, permissions="-rwxr-xr-x")
 
-    fs: Dict[str, VirtualFile] = {
+    task_files: Dict[str, VirtualFile] = {
         "/var/spool/cron/crontabs/www-data": _vf(
             "/var/spool/cron/crontabs/www-data", cron_content, cron_meta),
         "/var/www/.config/.update_check": _vf(
@@ -590,7 +596,10 @@ def _build_medium(rng: np.random.RandomState, seed: int) -> InternalState:
         "/etc/crontab": _vf("/etc/crontab", benign_cron, benign_meta),
         "/tmp/.cache_clear.sh": _vf("/tmp/.cache_clear.sh", honeypot_content, honey_meta),
     }
-    fs.update(_generate_noise(rng, base_time))
+    # Noise first, task artifacts overlaid — never let generated noise
+    # clobber a file the TruthDAG depends on.
+    fs = _generate_noise(rng, base_time)
+    fs.update(task_files)
 
     dag = TruthDAG(
         scenario_name="stealthy_persistence",
@@ -687,8 +696,8 @@ def _build_hard(rng: np.random.RandomState, seed: int) -> InternalState:
 
     # Forged mtime — back-dated to original package compile era
     forged_year  = int(rng.randint(2019, 2022))
-    forged_month = int(rng.randint(1, 12))
-    forged_day   = int(rng.randint(1, 28))
+    forged_month = int(rng.randint(1, 13))   # half-open: 1..12
+    forged_day   = int(rng.randint(1, 29))   # half-open: 1..28
     original_compile_date = datetime(
         forged_year, forged_month, forged_day,
         int(rng.randint(0, 23)), int(rng.randint(0, 59)), 0,
