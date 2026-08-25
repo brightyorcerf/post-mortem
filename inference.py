@@ -21,13 +21,13 @@ Usage
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import os
 import re
 import sys
 from typing import Any, Dict, List, Optional
 
+import httpx
 from openai import OpenAI
 
 # ---------------------------------------------------------------------------
@@ -43,7 +43,6 @@ SERVER_URL:   str = os.environ.get("SERVER_URL",   "http://localhost:7860")
 TEMPERATURE:  float = 0.0
 MAX_TOKENS:   int   = 1024
 MAX_STEPS:    int   = 40          # leave 10 budget units as safety margin
-MAX_TOTAL_REWARD: float = 1.0    # used for score normalisation
 SUCCESS_SCORE_THRESHOLD: float = 0.80
 
 BENCHMARK = "shadow_register"
@@ -102,52 +101,6 @@ def log_end(
 
 
 # ---------------------------------------------------------------------------
-# Server client  (thin httpx wrapper around the FastAPI server)
-# ---------------------------------------------------------------------------
-
-class ShadowRegisterClient:
-    """
-    HTTP client for the SHADOW_REGISTER OpenEnv server.
-    Mirrors the env.reset() / env.step() interface so inference.py
-    reads identically to the OpenEnv SDK pattern.
-    """
-
-    def __init__(self, base_url: str = SERVER_URL) -> None:
-        import httpx
-        self._base = base_url.rstrip("/")
-        self._http = httpx.Client(timeout=30.0)
-        self.last_grader_report: Optional[Dict[str, Any]] = None
-
-    def ping(self) -> bool:
-        try:
-            r = self._http.get(f"{self._base}/ping")
-            return r.status_code == 200
-        except Exception:
-            return False
-
-    def reset(self, task: str, seed: int = 42) -> Dict[str, Any]:
-        r = self._http.post(
-            f"{self._base}/reset",
-            json={"task": task, "seed": seed},
-        )
-        r.raise_for_status()
-        return r.json()
-
-    def step(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        r = self._http.post(
-            f"{self._base}/step",
-            json={"action": action},
-        )
-        r.raise_for_status()
-        data = r.json()
-        self.last_grader_report = data.get("info", {}).get("grader_report")
-        return data
-
-    def close(self) -> None:
-        self._http.close()
-
-
-# ---------------------------------------------------------------------------
 # System prompt
 # ---------------------------------------------------------------------------
 
@@ -170,7 +123,7 @@ SubmitCase {
     {
       "artifact": "<path>",
       "ioc":      "<value>",
-      "type":     "NETWORK_IP|EVENT_TIMESTAMP|PATH_TO_FILE|COMMAND_STRING|USER_ACCOUNT|FILE_HASH",
+      "type":     "NETWORK_IP|EVENT_TIMESTAMP|PATH_TO_FILE|COMMAND_STRING",
       "reason":   "<brief explanation>"
     }
   ]
@@ -236,36 +189,25 @@ def get_model_action(
 def _parse_action(raw: str) -> Dict[str, Any]:
     """
     Extract the first JSON object from the model's response.
-    Handles markdown fences, stray prose, and single-quote JSON.
+
+    Returns {} when nothing parses — the server rejects it and charges a
+    budget unit, which is honest.  Substituting a plausible-looking Search
+    hid parse failures as ordinary steps.
     """
-    # Strip markdown fences
     raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
-
-    # Try direct parse first
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        pass
-
-    # Extract first {...} block
     match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if match:
-        candidate = match.group(0)
+    for candidate in (raw, match.group(0) if match else None):
+        if not candidate:
+            continue
         try:
-            return json.loads(candidate)
+            parsed = json.loads(candidate)
         except json.JSONDecodeError:
-            pass
-        # Last resort: ast.literal_eval for single-quoted dicts
-        try:
-            result = ast.literal_eval(candidate)
-            if isinstance(result, dict):
-                return result
-        except Exception:
-            pass
+            continue
+        if isinstance(parsed, dict):
+            return parsed
 
-    # Absolute fallback
     print(f"[DEBUG] Could not parse model output: {raw[:200]}", flush=True)
-    return {"action": "Search", "query": "log"}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -274,8 +216,13 @@ def _parse_action(raw: str) -> Dict[str, Any]:
 
 def main(task: str, seed: int, max_steps: int) -> None:
     # ── validate server is up ──────────────────────────────────────────
-    client_env = ShadowRegisterClient(SERVER_URL)
-    if not client_env.ping():
+    base = SERVER_URL.rstrip("/")
+    http = httpx.Client(timeout=30.0)
+    try:
+        reachable = http.get(f"{base}/ping").status_code == 200
+    except Exception:
+        reachable = False
+    if not reachable:
         print(
             f"[ERROR] Server not reachable at {SERVER_URL}. "
             "Start it with: python -m server.app",
@@ -301,7 +248,9 @@ def main(task: str, seed: int, max_steps: int) -> None:
 
     try:
         # ── reset ─────────────────────────────────────────────────────
-        result = client_env.reset(task=task, seed=seed)
+        r = http.post(f"{base}/reset", json={"task": task, "seed": seed})
+        r.raise_for_status()
+        result = r.json()
         obs    = result["observation"]
         last_view   = obs["current_view"]
         last_reward = 0.0
@@ -324,7 +273,9 @@ def main(task: str, seed: int, max_steps: int) -> None:
 
             # ── environment step ──────────────────────────────────────
             try:
-                result      = client_env.step(action_dict)
+                r = http.post(f"{base}/step", json={"action": action_dict})
+                r.raise_for_status()
+                result      = r.json()
                 obs         = result["observation"]
                 reward      = float(result.get("reward", 0.0))
                 done        = bool(result.get("done", False))
@@ -350,7 +301,7 @@ def main(task: str, seed: int, max_steps: int) -> None:
 
             if done:
                 # Pull grader score if server attached it
-                grader = client_env.last_grader_report
+                grader = result.get("info", {}).get("grader_report")
                 if grader:
                     graded  = True
                     score   = float(grader.get("score", 0.0))
@@ -366,12 +317,12 @@ def main(task: str, seed: int, max_steps: int) -> None:
         # (score < SUCCESS_SCORE_THRESHOLD) must not be overwritten by the
         # step-cost-dominated reward sum.
         if not graded and rewards:
-            score   = min(max(sum(rewards) / MAX_TOTAL_REWARD, 0.0), 1.0)
+            score   = min(max(sum(rewards), 0.0), 1.0)
             success = score >= SUCCESS_SCORE_THRESHOLD
 
     finally:
         try:
-            client_env.close()
+            http.close()
         except Exception as e:
             print(f"[DEBUG] Client close error: {e}", flush=True)
 

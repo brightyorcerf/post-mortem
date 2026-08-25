@@ -13,41 +13,6 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-def test_docker_build():
-    """TEST 1: Docker build succeeds on Linux"""
-    print("\n" + "="*80)
-    print("TEST 1: Docker Build")
-    print("="*80)
-
-    # Check if Dockerfile exists
-    dockerfile = Path(__file__).resolve().parent.parent / "Dockerfile"
-    if not dockerfile.exists():
-        print("❌ FAIL: Dockerfile not found")
-        return False
-
-    # Extract COPY commands and verify files exist
-    with open(dockerfile) as f:
-        content = f.read()
-
-    copies = re.findall(r'COPY\s+(\S+)\s+\.', content)
-    print(f"Found COPY commands for: {copies}")
-
-    all_exist = True
-    for fname in copies:
-        exists = (Path(__file__).resolve().parent.parent / fname).exists()
-        status = "✅" if exists else "❌"
-        print(f"  {status} {fname}")
-        if not exists:
-            all_exist = False
-
-    if all_exist:
-        print("✅ PASS: All COPY source files exist (case-sensitive)")
-        return True
-    else:
-        print("❌ FAIL: Some source files missing or case mismatch")
-        return False
-
-
 def test_reset_step_flow():
     """TEST 2: Reset, step, and empty SubmitCase flow"""
     print("\n" + "="*80)
@@ -220,7 +185,6 @@ def main():
     print("="*80)
 
     results = {
-        "Docker Build": test_docker_build(),
         "Reset/Step Flow": test_reset_step_flow(),
         "Determinism (σ=0)": test_determinism(),
         "Log Parser": test_log_parser(),

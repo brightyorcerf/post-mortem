@@ -71,8 +71,8 @@ The agent communicates through a single Pydantic-validated model: `ForensicActio
 |:-------|:--------|:--------|:---------------|
 | **`Search`** | Global keyword search across all virtual files | Filename, hit count, and relevance score per file — **never raw content** | Triage: identify which artifacts warrant deeper analysis. Relevance scoring penalises noisy files (high line count, low match density), preventing blind grep strategies. |
 | **`Inspect`** | Retrieve `stat(1)`-style metadata for a file | `mtime`, `atime`, `ctime`, `size`, `uid`, `gid`, `permissions` | Critical for detecting **timestomping** — mtime/ctime discrepancies reveal anti-forensic tampering. Also surfaces size mismatches against package records. |
-| **`Read`** | Read a 1000-character window at a given byte offset | Content slice + EOF distance indicator | Primary intelligence-gathering action. The 1000-char window forces the agent to reason about *which portion* of a large log to read, rather than consuming the entire file. |
-| **`Tag`** | Formally record evidence as a key-value pair | Confirmation + **honeypot penalty check** | Evidence bookkeeping with consequences: tagging a honeypot artifact triggers a **-0.40 deception penalty**. Forces the agent to validate before committing. |
+| **`Read`** | Read a windowed slice at a given byte offset | Content slice + EOF distance indicator | Primary intelligence-gathering action. The window forces the agent to reason about *which portion* of a large log to read, rather than consuming the entire file. The header states the exact slice length (`+N chars`); advancing `offset` by that number pages through a file without skipping bytes. |
+| **`Tag`** | Formally record evidence as a key-value pair | Confirmation + **honeypot check** | Evidence bookkeeping with consequences in both directions: tagging a value on the TruthDAG pays **+0.10** (once per IOC), tagging a honeypot triggers a **-0.40 deception penalty**. Forces the agent to validate before committing, without making the action pure downside. |
 | **`SubmitCase`** | File the final case report and terminate the episode | Grader evaluation score (0.0–1.0) | The agent submits a list of `ForensicPivot` objects, each binding an artifact to an IOC with a classified type and causal reason. Scoring is immediate and deterministic. |
 
 
@@ -83,7 +83,6 @@ After every action, the agent receives a strictly typed observation:
 ```python
 class ForensicObs(BaseModel):
     current_view:      str                     # 1000-char terminal output window
-    working_directory: str                     # Always "/" (no cd action)
     artifact_metadata: Optional[FileMetadata]  # stat(1) data after Inspect
     tagged_evidence:   Dict[str, str]          # Accumulated evidence bag
     remaining_budget:  int                     # Actions left before termination (max: 50)
@@ -95,11 +94,11 @@ class ForensicObs(BaseModel):
 | IOC Type | Grader Matching | Example |
 |:---------|:----------------|:--------|
 | `NETWORK_IP` | Exact (normalised) | `185.47.92.13` |
-| `EVENT_TIMESTAMP` | Exact ISO 8601, or substring within discrepancy string | `2025-11-14T03:22:17Z` |
+| `EVENT_TIMESTAMP` | Exact ISO 8601, or a *distinctive* substring of a discrepancy string | `2025-11-14T03:22:17Z` |
 | `PATH_TO_FILE` | Exact (leading `/` tolerated) | `/var/www/.config/.update_check` |
 | `COMMAND_STRING` | **Substring** match (base64 payloads are long) | `Y3VybCAtcyBodHRwOi...` |
-| `USER_ACCOUNT` | Exact (normalised) | `www-data` |
-| `FILE_HASH` | Exact (normalised) | `a3f8c29d01b7e54f...` |
+
+Partial credit via substring is gated: a submitted value must be **≥8 characters and ≥25% of the expected IOC** (`SUBSTRING_MIN_CHARS` / `SUBSTRING_MIN_RATIO`). This keeps the intended affordances — submitting one timestamp out of an `mtime=X vs ctime=Y` proof, or a clipped base64 payload — while refusing empty or one-character submissions, which would otherwise be substrings of everything and score for free.
 
 ---
 
@@ -180,7 +179,7 @@ An insider with root access replaced the system login binary with a backdoored v
 
 The grader (`grader.py`) is fully deterministic and operates in four phases:
 
-1. **Per-node weighted matching**: Each submitted `ForensicPivot` is compared against TruthDAG nodes using type-aware IOC matching (exact, substring, or path-normalised depending on IOC type). Matched nodes contribute their weight to the raw score.
+1. **Per-node weighted matching**: Each submitted `ForensicPivot` is compared against TruthDAG nodes using type-aware IOC matching (exact, distinctive-substring, or path-normalised depending on IOC type — see §2.3). A pivot matches only when **both** the artifact path and the IOC value match. Matched nodes contribute their weight to the raw score.
 
 2. **Honeypot penalty**: Any pivot that matches a honeypot node subtracts **-0.40** from the score.
 
@@ -198,13 +197,18 @@ Rewards are emitted per-step to provide dense learning signal:
 
 | Component | Value | Trigger |
 |:----------|:-----:|:--------|
-| **Evidence Milestone** | `+0.20` | First `Read` of an artifact on the TruthDAG critical path |
+| **Evidence Milestone** | `+0.20` | First `Read` **or** `Inspect` of an artifact on the TruthDAG critical path (once per artifact) |
 | **Analytical Cost** | `-0.05` | Every action (discourages brute-force file enumeration) |
+| **Evidence Confirmed** | `+0.10` | First `Tag` of a value matching a non-honeypot TruthDAG IOC (once per IOC) |
 | **Honeypot Penalty** | `-0.40` | `Tag` action targeting a honeypot's artifact or IOC |
 | **Resolution Bonus** | `+1.00` | `SubmitCase` with pivots correctly matching the TruthDAG |
 | **Efficiency Bonus** | `+0.10` | `SubmitCase` with ≥40% budget remaining AND positive score |
 
 The per-step cost creates an implicit planning pressure: an agent that reads every file in the filesystem burns 20+ actions on noise, leaving insufficient budget for the investigation and sacrificing the efficiency bonus.
+
+`Inspect` earns the milestone alongside `Read` because metadata is the *only* route to the `timestomp_proxy` kill chain — rewarding content reads exclusively would leave the hardest task's core mechanic unpaid. Malformed actions and unknown action types are charged the analytical cost like any other step, so budget remains a real bound on the episode.
+
+Note the sign convention: per-step rewards span `[-0.45, +0.95]` and episode sums are routinely negative, while the **grader score** reported in `info.score` is separately clamped to `[0.0, 1.0]`. These are two different numbers; `openenv.yaml` declares them as `range` and `score_range` respectively.
 
 ---
 
@@ -245,14 +249,23 @@ export API_BASE_URL="https://api.openai.com/v1"
 export MODEL_NAME="gpt-4o"
 export HF_TOKEN="your-hf-token-here"
 
-# Run a single episode
+# Run a single episode (default task: noisy_entry)
 python3 inference.py --task noisy_entry --seed 42
 
 # Run all three tasks
-python3 inference.py --task noisy_entry --seed 42
 python3 inference.py --task stealthy_persistence --seed 42
 python3 inference.py --task timestomp_proxy --seed 42
 ```
+
+`--task all` runs every scenario in one process, emitting a separate
+`[START]`/`[END]` block per task — convenient interactively, but log parsers
+that expect a single run will only see the last block. `HF_TOKEN` has no
+default and inference exits with a clear error if it is unset.
+
+Each `[STEP]` line is a space-separated `key=value` record, so every field is
+collapsed to a single whitespace-free token. The action *type* is logged
+(`action=SubmitCase`); the full JSON payload goes to a companion `[DEBUG]`
+line, keeping multi-word queries and pivot reasons from breaking the grammar.
 
 
 ### 5.5 · OpenEnv Validation
@@ -268,15 +281,37 @@ The environment exposes the four required OpenEnv endpoints:
 | `/ping` | `GET` | Health check → `{"status": "ok"}` |
 | `/reset` | `POST` | Start a fresh episode (`task`, `seed`) |
 | `/step` | `POST` | Execute a `ForensicAction`, return next observation |
-| `/state` | `GET` | Return full `InternalState` + TruthDAG (**grader only**) |
+| `/state` | `GET` | Return full `InternalState` + TruthDAG (**grader only** — see below) |
+
+`/state` returns the answer key: every expected IOC and every `is_honeypot`
+flag. Because the agent under evaluation talks to this same HTTP surface, the
+route is **closed by default** and returns `403`. To enable it for grading, set
+`GRADER_TOKEN` in the server environment and send it back as the
+`X-Grader-Token` header:
+
+```bash
+GRADER_TOKEN=secret python3 -m server.app
+curl -H "X-Grader-Token: secret" http://localhost:7860/state
+```
+
+An unknown task id passed to `/reset` returns `400` with the valid list rather
+than silently falling back, so a typo cannot be graded against the wrong
+scenario. Omitting `task` entirely still yields the documented `noisy_entry`
+default.
 
 ### 5.6 Tests
 
 ```bash
-python3 tests/evaluateStability.py
-python3 tests/testRun.py
-python3 tests/testSpec.py
+python3 tests/testSpec.py              # pre-submission checklist (runs the code)
+python3 tests/test_audit_regressions.py  # regression guards for known bugs
+python3 tests/evaluateStability.py     # σ=0 determinism over 100 iterations
+python3 tests/testRun.py               # reset/step flow + log-format parsing
 ```
+
+Every check executes the code it covers. Tests that merely asserted strings
+appeared in source files were removed — they stayed green through real
+scoring, logging, and disclosure bugs, so they were reporting confidence
+rather than measuring it.
 
 ---
 

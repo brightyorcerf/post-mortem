@@ -70,11 +70,6 @@ observation_space:
       type: string
       max_length: 1000
       description: "Current terminal output window (1000-char slice)."
-    working_directory:
-      type: string
-      description: >
-        Filesystem root context. Always "/" — paths are absolute and there is
-        no cd action, so this is a constant, not navigable state.
     artifact_metadata:
       type: object
       nullable: true
@@ -137,7 +132,7 @@ action_space:
             fields:
               artifact: { type: string }
               ioc:      { type: string }
-              type:     { type: string, enum: [NETWORK_IP, EVENT_TIMESTAMP, PATH_TO_FILE, COMMAND_STRING, USER_ACCOUNT, FILE_HASH] }
+              type:     { type: string, enum: [NETWORK_IP, EVENT_TIMESTAMP, PATH_TO_FILE, COMMAND_STRING] }
               reason:   { type: string }
 
 # ── Reward ───────────────────────────────────────────────────────────────────

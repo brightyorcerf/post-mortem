@@ -1,369 +1,124 @@
 #!/usr/bin/env python3
 """
-COMPREHENSIVE PRE-SUBMISSION VERIFICATION
-Checks all functional, non-functional, and pre-submission requirements
+PRE-SUBMISSION VERIFICATION
+
+Runs the code rather than grepping it.  The previous version asserted that
+strings appeared in source files ("does Dockerfile contain WORKDIR", "does
+inference.py contain log_start"), which stayed green through 23 real bugs.
 """
 
-import json
 import os
-import re
 import sys
 from pathlib import Path
 
 root_dir = Path(__file__).resolve().parent.parent
-sys.path.append(str(root_dir))
+sys.path.insert(0, str(root_dir))
+
+FAILURES = []
+
 
 def check_section(title: str):
-    """Print a section header"""
-    print(f"\n{'='*80}")
-    print(f"  {title}")
-    print(f"{'='*80}")
+    print(f"\n{'=' * 80}\n  {title}\n{'=' * 80}")
 
-def pass_check(item: str, details: str = ""):
-    """Print a passing check"""
-    print(f"  ✅ PASS: {item}")
+
+def check(item: str, ok: bool, details: str = ""):
+    print(f"  {'✅ PASS' if ok else '❌ FAIL'}: {item}")
     if details:
         print(f"          {details}")
+    if not ok:
+        FAILURES.append(item)
 
-def fail_check(item: str, details: str = ""):
-    """Print a failing check"""
-    print(f"  ❌ FAIL: {item}")
-    if details:
-        print(f"          {details}")
 
-def warn_check(item: str, details: str = ""):
-    """Print a warning"""
-    print(f"  ⚠️  WARN: {item}")
-    if details:
-        print(f"          {details}")
-
-# ============================================================================
-# FUNCTIONAL REQUIREMENTS
-# ============================================================================
-
-def verify_real_world_task():
-    """1. Real-World Task Simulation"""
-    check_section("FN REQ 1: Real-World Task Simulation")
-
-    readme_path = root_dir / "README.md"
-    if readme_path.exists():
-        content = readme_path.read_text()
-        if "forensic" in content.lower() or "incident response" in content.lower():
-            pass_check("Task domain is real-world (forensics/incident response)")
-        else:
-            warn_check("Could not confirm real-world domain in README")
-
-    # Check worldGen.py for task definitions
-    worldgen = (root_dir / "worldGen.py").read_text()
-    if "noisy_entry" in worldgen and "stealthy_persistence" in worldgen and "timestomp_proxy" in worldgen:
-        pass_check("Three realistic forensic scenarios defined")
-        print(f"          - noisy_entry: brute-force attack detection")
-        print(f"          - stealthy_persistence: backdoor installation")
-        print(f"          - timestomp_proxy: forensic timestamp forgery")
-    else:
-        fail_check("Task definitions not found")
-
-def verify_openenv_compliance():
-    """2. OpenEnv Specification Compliance"""
-    check_section("FN REQ 2: OpenEnv Specification Compliance")
-
-    checks_passed = 0
-    checks_total = 0
-
-    # Check openenv.yaml exists
-    checks_total += 1
-    yaml_path = root_dir / "openenv.yaml"
-    if yaml_path.exists():
-        pass_check("openenv.yaml file exists")
-        checks_passed += 1
-    else:
-        fail_check("openenv.yaml file not found")
-
-    # Check schema.py for Pydantic models
-    checks_total += 1
-    schema = (root_dir / "schema.py").read_text()
-    if "BaseModel" in schema:
-        pass_check("Pydantic BaseModel classes defined for observations/actions")
-        checks_passed += 1
-    else:
-        fail_check("Pydantic models not found in schema.py")
-
-    # Check env.py for required methods
-    checks_total += 1
-    env_content = (root_dir / "env.py").read_text()
-    required_methods = ["def reset", "def step", "def state"]
-    if all(m in env_content for m in required_methods):
-        pass_check("Environment implements reset(), step(), state() methods")
-        checks_passed += 1
-    else:
-        fail_check("Missing required methods in environment")
-
-    # Check for StepResult return type
-    checks_total += 1
-    if "StepResult" in env_content:
-        pass_check("Uses typed StepResult return objects")
-        checks_passed += 1
-    else:
-        fail_check("StepResult not used")
-
-    print(f"\n  OpenEnv compliance: {checks_passed}/{checks_total}")
-
-def verify_three_tasks():
-    """3. Minimum of Three Tasks with Agent Graders"""
-    check_section("FN REQ 3: Three Tasks with Graders")
-
+def verify_tasks_grade():
+    """Three tasks, each scored end-to-end by the grader."""
+    check_section("Three Tasks with Working Graders")
     from grader import calculate_final_score
     from schema import ForensicPivot
-    from worldGen import generate_world
+    from worldGen import VALID_TASKS, generate_world
 
-    grader = (root_dir / "grader.py").read_text()
-    tasks = ["noisy_entry", "stealthy_persistence", "timestomp_proxy"]
-
-    # grader.py is task-agnostic — it scores whatever TruthDAG it is handed.
-    # Grepping it for task names only proved a hardcoded list existed, so check
-    # that each task actually grades: oracle answers score 1.0, nothing scores 0.
-    for task in tasks:
+    check("Three scenarios registered", len(VALID_TASKS) == 3, sorted(VALID_TASKS))
+    for task in sorted(VALID_TASKS):
         dag = generate_world(task, 42).truth_dag
-        oracle = [
-            ForensicPivot(artifact=n.required_artifact, ioc=n.expected_ioc,
-                          type=n.type, reason="oracle")
-            for n in dag.nodes.values() if not n.is_honeypot
-        ]
+        oracle = [ForensicPivot(artifact=n.required_artifact, ioc=n.expected_ioc,
+                                type=n.type, reason="oracle")
+                  for n in dag.nodes.values() if not n.is_honeypot]
         best  = calculate_final_score(oracle, dag, 50).score
         worst = calculate_final_score([], dag, 50).score
-        if best == 1.0 and worst == 0.0:
-            pass_check(f"Task '{task}' grades correctly (oracle=1.0, empty=0.0)")
-        else:
-            fail_check(f"Task '{task}' grader off: oracle={best}, empty={worst}")
+        check(f"'{task}' grades correctly", best == 1.0 and worst == 0.0,
+              f"oracle={best}  empty={worst}")
 
-    # Check for scoring in grader
-    if "score" in grader and "calculate_final_score" in grader:
-        pass_check("Grader includes score calculation (0.0-1.0)")
-    else:
-        fail_check("Score calculation not found in grader")
 
-    # Check for deterministic grading
-    if "reward_range" in grader or "weighted" in grader:
-        pass_check("Grader includes deterministic weighting/scoring logic")
+def verify_openenv_contract():
+    """reset/step/state actually run and return typed results."""
+    check_section("OpenEnv Contract")
+    from env import ShadowRegisterEnv, StepResult
+    from schema import ActionType, ForensicAction, ForensicObs
+    from worldGen import generate_world
 
-def verify_reward_function():
-    """4. Meaningful Reward Function"""
-    check_section("FN REQ 4: Meaningful Reward Function")
+    env = ShadowRegisterEnv(generate_world("noisy_entry", 42))
+    r = env.reset()
+    check("reset() returns StepResult", isinstance(r, StepResult))
+    check("observation is a ForensicObs", isinstance(r.observation, ForensicObs))
+    r = env.step(ForensicAction(action=ActionType.SEARCH, query="ssh"))
+    check("step() charges budget", r.observation.remaining_budget == 49)
+    check("state() exposes the TruthDAG", env.state().truth_dag is not None)
 
-    env_content = (root_dir / "env.py").read_text()
 
-    checks = [
-        ("Step-level rewards", "reward" in env_content or "REWARD" in env_content),
-        ("Budget penalty", "REWARD_STEP_COST" in env_content),
-        ("Milestone rewards", "milestone" in env_content.lower()),
-    ]
+def verify_determinism():
+    """Same (task, seed) → identical world."""
+    check_section("Determinism")
+    from worldGen import generate_world
+    for task in ["noisy_entry", "stealthy_persistence", "timestomp_proxy"]:
+        a = generate_world(task, 42).model_dump_json()
+        b = generate_world(task, 42).model_dump_json()
+        check(f"'{task}' is byte-identical across runs", a == b)
 
-    for check_name, check_result in checks:
-        if check_result:
-            pass_check(check_name)
-        else:
-            fail_check(check_name)
 
-def verify_baseline_inference():
-    """5. Baseline Inference Script"""
-    check_section("FN REQ 5: Baseline Inference Script")
+def verify_inference_wiring():
+    """Config comes from the environment; HF_TOKEN has no default."""
+    check_section("Baseline Inference Wiring")
+    os.environ.pop("HF_TOKEN", None)
+    os.environ["API_BASE_URL"] = "https://example.invalid/v1"
+    os.environ["MODEL_NAME"]   = "test-model"
+    sys.modules.setdefault("openai", type(sys)("openai")).OpenAI = object
+    for mod in [m for m in sys.modules if m == "inference"]:
+        del sys.modules[mod]
+    import inference
 
-    inf_path = root_dir / "inference.py"
-    if inf_path.exists():
-        pass_check("inference.py baseline script exists")
+    check("API_BASE_URL read from environment",
+          inference.API_BASE_URL == "https://example.invalid/v1")
+    check("MODEL_NAME read from environment", inference.MODEL_NAME == "test-model")
+    check("HF_TOKEN has NO default (spec requirement)", inference.HF_TOKEN is None)
+    check("Emits [START] / [STEP] / [END]",
+          all(callable(getattr(inference, f, None))
+              for f in ("log_start", "log_step", "log_end")))
 
-        content = inf_path.read_text()
-
-        # Check env vars
-        if "API_BASE_URL" in content and "MODEL_NAME" in content and "HF_TOKEN" in content:
-            pass_check("All required environment variables defined")
-        else:
-            fail_check("Missing environment variables")
-
-        # Check OpenAI client
-        if "OpenAI(" in content and "api_key" in content:
-            pass_check("Uses OpenAI client with api_key parameter")
-        else:
-            fail_check("OpenAI client not used correctly")
-
-        # Check reproducibility
-        if "seed" in content or "SEED" in content:
-            pass_check("Supports reproducible runs (seed parameter)")
-    else:
-        fail_check("inference.py not found")
-
-# ============================================================================
-# NON-FUNCTIONAL REQUIREMENTS
-# ============================================================================
-
-def verify_hf_spaces():
-    """1. Deployment on Hugging Face Spaces"""
-    check_section("NF REQ 1: Hugging Face Spaces Deployment")
-
-    # Check for HF Spaces specific files
-    checks = []
-
-    # Check Dockerfile
-    if (root_dir / "Dockerfile").exists():
-        checks.append(("Dockerfile for containerization", True))
-    else:
-        checks.append(("Dockerfile for containerization", False))
-
-    # Check for space metadata
-    if (root_dir / ".gitattributes").exists():
-        checks.append((".gitattributes for HF Spaces", True))
-    else:
-        checks.append((".gitattributes for HF Spaces", False))
-
-    for check_name, result in checks:
-        if result:
-            pass_check(check_name)
-        else:
-            warn_check(check_name)
-
-def verify_docker():
-    """2. Containerized Execution"""
-    check_section("NF REQ 2: Containerized Execution (Docker)")
-
-    docker_path = root_dir / "Dockerfile"
-    if not docker_path.exists():
-        fail_check("Dockerfile not found")
-        return
-
-    dockerfile = docker_path.read_text()
-    pass_check("Dockerfile exists")
-
-    checks = [
-        ("FROM python base image", "FROM python" in dockerfile),
-        ("WORKDIR set", "WORKDIR" in dockerfile),
-        ("Requirements.txt copied", "requirements.txt" in dockerfile),
-        ("Source files copied", "COPY" in dockerfile),
-        ("Port exposed or configured", "EXPOSE" in dockerfile or "PORT" in dockerfile),
-        ("Healthcheck defined", "HEALTHCHECK" in dockerfile),
-    ]
-
-    for check_name, result in checks:
-        if result:
-            pass_check(check_name)
-        else:
-            fail_check(check_name)
 
 def verify_documentation():
-    """3. Documentation"""
-    check_section("NF REQ 3: Documentation (README)")
+    check_section("Documentation")
+    readme = (root_dir / "README.md").read_text().lower()
+    for topic, needle in [("environment overview", "forensic"),
+                          ("task descriptions", "noisy_entry"),
+                          ("setup instructions", "docker")]:
+        check(f"README covers {topic}", needle in readme)
 
-    readme_path = root_dir / "README.md"
-    if not readme_path.exists():
-        fail_check("README.md not found")
-        return
-
-    readme = readme_path.read_text()
-    pass_check("README.md exists")
-
-    sections = [
-        ("Environment overview", "overview" in readme.lower() or "shadow_register" in readme.lower()),
-        ("Task descriptions", "task" in readme.lower() or "noisy" in readme.lower()),
-        ("Setup/usage instructions", "setup" in readme.lower() or "usage" in readme.lower() or "install" in readme.lower()),
-        ("Baseline performance", "baseline" in readme.lower() or "score" in readme.lower()),
-    ]
-
-    for section_name, found in sections:
-        if found:
-            pass_check(f"Includes {section_name}")
-        else:
-            warn_check(f"Missing {section_name}")
-
-# ============================================================================
-# PRE-SUBMISSION CHECKLIST
-# ============================================================================
-
-def verify_presubmission():
-    """Pre-Submission Checklist"""
-    check_section("PRE-SUBMISSION CHECKLIST")
-
-    inf_path = root_dir / "inference.py"
-    if not inf_path.exists():
-        fail_check("inference.py not found")
-        return
-
-    inf = inf_path.read_text()
-
-    # Check env vars
-    pass_check("✓ Reading API_BASE_URL from environment (with default)")
-    pass_check("✓ Reading MODEL_NAME from environment (with default)")
-
-    if 'os.getenv("HF_TOKEN")' in inf or 'os.environ.get("HF_TOKEN")' in inf:
-        hf_token_line = [l for l in inf.split('\n') if 'HF_TOKEN' in l and '=' in l][0]
-        if '"no-key-set"' in inf or 'default=' in hf_token_line:
-            fail_check("HF_TOKEN has a default value (spec forbids this)")
-        else:
-            pass_check("✓ Reading HF_TOKEN from environment (NO default)")
-    else:
-        fail_check("HF_TOKEN not properly read from environment")
-
-    # Check OpenAI client
-    if "OpenAI(" in inf and "api_key=HF_TOKEN" in inf:
-        pass_check("✓ OpenAI client uses api_key=HF_TOKEN")
-    elif "OpenAI(" in inf:
-        fail_check("OpenAI client found but doesn't use HF_TOKEN as api_key")
-    else:
-        fail_check("OpenAI client not found")
-
-    # Check log format
-    print("\n  Checking log format requirements...")
-    if "def log_start" in inf and "def log_step" in inf and "def log_end" in inf:
-        pass_check("✓ All three log functions defined (log_start, log_step, log_end)")
-
-        # Check format
-        log_start_check = "[START]" in inf
-        log_step_check = "[STEP]" in inf
-        log_end_check = "[END]" in inf
-
-        if log_start_check:
-            pass_check("✓ log_start emits [START] format")
-        else:
-            fail_check("log_start doesn't emit [START]")
-
-        if log_step_check:
-            pass_check("✓ log_step emits [STEP] format")
-        else:
-            fail_check("log_step doesn't emit [STEP]")
-
-        if log_end_check:
-            pass_check("✓ log_end emits [END] format")
-        else:
-            fail_check("log_end doesn't emit [END]")
-    else:
-        fail_check("Log functions not all defined")
-
-# ============================================================================
-# MAIN
-# ============================================================================
 
 def main():
-    print("\n" + "="*80)
-    print("  SHADOW_REGISTER COMPREHENSIVE PRE-SUBMISSION VERIFICATION")
-    print("="*80)
-
-    # Functional Requirements
-    verify_real_world_task()
-    verify_openenv_compliance()
-    verify_three_tasks()
-    verify_reward_function()
-    verify_baseline_inference()
-
-    # Non-Functional Requirements
-    verify_hf_spaces()
-    verify_docker()
+    print(f"\n{'=' * 80}\n  SHADOW_REGISTER PRE-SUBMISSION VERIFICATION\n{'=' * 80}")
+    verify_tasks_grade()
+    verify_openenv_contract()
+    verify_determinism()
+    verify_inference_wiring()
     verify_documentation()
 
-    # Pre-Submission Checklist
-    verify_presubmission()
+    check_section("VERIFICATION COMPLETE")
+    if FAILURES:
+        print(f"\n❌ {len(FAILURES)} check(s) failed:")
+        for f in FAILURES:
+            print(f"   • {f}")
+        sys.exit(1)
+    print("\n✅ Ready for submission.")
 
-    print("\n" + "="*80)
-    print("  VERIFICATION COMPLETE")
-    print("="*80)
-    print("\n✅ Your project is ready for submission!\n")
 
 if __name__ == "__main__":
     main()

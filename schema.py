@@ -12,8 +12,6 @@ class IOCType(str, Enum):
     EVENT_TIMESTAMP = "EVENT_TIMESTAMP"
     FILE_PATH = "PATH_TO_FILE"
     COMMAND_STRING = "COMMAND_STRING"
-    USER_ACCOUNT = "USER_ACCOUNT"
-    FILE_HASH = "FILE_HASH"
 
 class ActionType(str, Enum):
     SEARCH = "Search"
@@ -42,16 +40,9 @@ class VirtualFile(BaseModel):
 
 # --- OBSERVATION SPACE ---
 
-class SearchResult(BaseModel):
-    """Response per file for global keyword searches."""
-    filename: str
-    hit_count: int
-    relevance_score: float  # low score indicates likely "System Noise"
-
 class ForensicObs(BaseModel):
     """The strictly typed state passed to the agent every step."""
     current_view: str = Field(..., max_length=1000)
-    working_directory: str
     artifact_metadata: Optional[FileMetadata] = None
     tagged_evidence: Dict[str, str] = Field(default_factory=dict)
     remaining_budget: int = Field(default=50, ge=0, le=50)

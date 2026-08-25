@@ -167,6 +167,30 @@ def test_truth_artifacts_survive_noise_generation():
             assert n.required_artifact in st.filesystem, f"{task}: {n.required_artifact}"
 
 
+def test_submit_returns_grader_report_over_http():
+    """The three facts the deleted Phase 2 validator files each re-asserted,
+    checked once against the real app instead of hand-rolled dicts."""
+    import yaml
+    import server.app as app_mod
+    c = TestClient(app_mod.app)
+
+    spec = yaml.safe_load((Path(__file__).resolve().parent.parent / "openenv.yaml").read_text())
+    declared = {t["id"]: t.get("grader") for t in spec["tasks"]}
+    assert set(declared) == set(TASKS) and all(declared.values()), declared
+
+    for task in TASKS:
+        c.post("/reset", json={"task": task, "seed": 42})
+        dag = app_mod._env.state().truth_dag
+        pivots = [{"artifact": n.required_artifact, "ioc": n.expected_ioc,
+                   "type": n.type.value, "reason": "oracle"}
+                  for n in dag.nodes.values() if not n.is_honeypot]
+        info = c.post("/step", json={"action": {"action": "SubmitCase",
+                                                "pivots": pivots}}).json()["info"]
+        assert info["score"] == 1.0, f"{task}: {info['score']}"
+        assert info["grader_report"]["breakdown"], f"{task}: empty breakdown"
+        json.dumps(info)   # must survive JSON serialisation
+
+
 def test_state_readable_before_reset():
     ShadowRegisterEnv(generate_world("noisy_entry", 1)).state()
 

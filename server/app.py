@@ -8,10 +8,10 @@ Thin FastAPI layer exposing the three OpenEnv endpoints:
     POST /step    → execute one ForensicAction
     GET  /state   → full InternalState (grader only)
 
-One environment instance is held in process memory per session.
+One environment instance is held in process memory.
 For the HF Space / single-agent evaluation use-case this is correct.
-If you need concurrent sessions, replace _session with a dict keyed
-by session_id and pass session_id in each request body.
+If you need concurrent sessions, replace _env with a dict keyed by
+session_id and pass session_id in each request body.
 """
 
 from __future__ import annotations
@@ -42,23 +42,18 @@ app = FastAPI(
 # In-process session  (one env at a time)
 # ---------------------------------------------------------------------------
 
-class _Session:
-    env:  Optional[ShadowRegisterEnv] = None
-    task: Optional[str]               = None
-    seed: int                         = 42
-
-_session = _Session()
-
 DEFAULT_TASK = "noisy_entry"
+
+_env: Optional[ShadowRegisterEnv] = None
 
 
 def _require_env() -> ShadowRegisterEnv:
-    if _session.env is None:
+    if _env is None:
         raise HTTPException(
             status_code=400,
             detail="No active episode. Call POST /reset first.",
         )
-    return _session.env
+    return _env
 
 
 # ---------------------------------------------------------------------------
@@ -67,13 +62,7 @@ def _require_env() -> ShadowRegisterEnv:
 
 class ResetRequest(BaseModel):
     task: Optional[str] = None
-    task_id: Optional[str] = None
-    id: Optional[str] = None
     seed: int = 42
-
-    def resolve_task(self) -> Optional[str]:
-        """Standard SDK fields first; None when the caller named no task."""
-        return self.task_id or self.task or self.id
 
 
 class StepRequest(BaseModel):
@@ -84,17 +73,8 @@ class StepRequest(BaseModel):
 
 def _serialise_result(result: StepResult) -> Dict[str, Any]:
     """Convert StepResult → plain dict for JSON serialisation."""
-    obs = result.observation
     return {
-        "observation": {
-            "current_view":      obs.current_view,
-            "working_directory": obs.working_directory,
-            "artifact_metadata": obs.artifact_metadata.model_dump()
-                                  if obs.artifact_metadata else None,
-            "tagged_evidence":   obs.tagged_evidence,
-            "remaining_budget":  obs.remaining_budget,
-            "last_action_log":   obs.last_action_log,
-        },
+        "observation": result.observation.model_dump(),
         "reward": result.reward,
         "done":   result.done,
         "info":   result.info,
@@ -124,7 +104,7 @@ def reset(req: Optional[ResetRequest] = Body(default=None)) -> JSONResponse:
     if req is None:
         req = ResetRequest()
 
-    requested_task = req.resolve_task()
+    requested_task = req.task
     if requested_task is None:
         # No task named at all — the documented default. Keeps the bare-body
         # validator probe working.
@@ -138,12 +118,10 @@ def reset(req: Optional[ResetRequest] = Body(default=None)) -> JSONResponse:
                    f"Valid tasks: {sorted(VALID_TASKS)}",
         )
 
-    world = generate_world(requested_task, req.seed)
-    _session.env  = ShadowRegisterEnv(world)
-    _session.task = requested_task
-    _session.seed = req.seed
+    global _env
+    _env = ShadowRegisterEnv(generate_world(requested_task, req.seed))
 
-    result = _session.env.reset()
+    result = _env.reset()
     return JSONResponse(_serialise_result(result))
 
 

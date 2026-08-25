@@ -61,28 +61,17 @@ class GraderReport:
     verdict:   str               = ""
 
     def __str__(self) -> str:
-        lines = [
-            f"{'═' * 52}",
-            f"  SHADOW_REGISTER // Grader Report",
-            f"{'═' * 52}",
-            f"  Final Score : {self.score:.4f}",
-            f"{'─' * 52}",
-            "  Node Results:",
+        rows = [
+            f"  {'✓ HIT ' if r['matched'] else '✗ MISS'}  {nid}"
+            f"{' [HONEYPOT]' if r.get('is_honeypot') else ''}"
+            f"  weight={r['weight']:.2f}  contribution={r['contribution']:+.4f}"
+            for nid, r in self.breakdown.items()
         ]
-        for node_id, result in self.breakdown.items():
-            status = "✓ HIT " if result["matched"] else "✗ MISS"
-            hp     = " [HONEYPOT]" if result.get("is_honeypot") else ""
-            lines.append(
-                f"    {status}  {node_id}{hp}"
-                f"  weight={result['weight']:.2f}"
-                f"  contribution={result['contribution']:+.4f}"
-            )
-        if self.penalties:
-            lines += ["", "  Penalties:"] + [f"    • {p}" for p in self.penalties]
-        if self.bonuses:
-            lines += ["", "  Bonuses:"]   + [f"    • {b}" for b in self.bonuses]
-        lines += ["", f"  Verdict: {self.verdict}", f"{'═' * 52}"]
-        return "\n".join(lines)
+        notes = [f"  ! {p}" for p in self.penalties] + [f"  + {b}" for b in self.bonuses]
+        return "\n".join(
+            [f"SHADOW_REGISTER // score {self.score:.4f}"] + rows + notes
+            + [f"  Verdict: {self.verdict}"]
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -114,8 +103,6 @@ def _ioc_matches(submitted: str, expected: str, ioc_type: IOCType) -> bool:
                         discrepancy string for the hard task
     FILE_PATH         — exact match; agent may omit leading slash
     COMMAND_STRING    — substring match (base64 strings are long)
-    USER_ACCOUNT      — exact after normalisation
-    FILE_HASH         — exact after normalisation
     """
     sub = _normalise(submitted)
     exp = _normalise(expected)

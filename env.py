@@ -15,8 +15,10 @@ The InternalState / TruthDAG is strictly internal.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from grader import calculate_final_score
 from schema import (
     ActionType,
     FileMetadata,
@@ -24,33 +26,19 @@ from schema import (
     ForensicObs,
     ForensicPivot,
     InternalState,
-    SearchResult,
 )
 
 # ---------------------------------------------------------------------------
 # StepResult  —  what the env returns after every action
 # ---------------------------------------------------------------------------
 
+@dataclass
 class StepResult:
     """Mirrors the OpenEnv contract: observation + reward + done flag."""
-
-    def __init__(
-        self,
-        observation: ForensicObs,
-        reward: float = 0.0,
-        done: bool = False,
-        info: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        self.observation = observation
-        self.reward = reward
-        self.done = done
-        self.info: Dict[str, Any] = info or {}
-
-    def __repr__(self) -> str:
-        return (
-            f"StepResult(reward={self.reward:+.3f}, done={self.done}, "
-            f"budget={self.observation.remaining_budget})"
-        )
+    observation: ForensicObs
+    reward: float = 0.0
+    done: bool = False
+    info: Dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -101,13 +89,8 @@ class ShadowRegisterEnv:
         self._obs: ForensicObs      = None
         self._milestones_hit: set   = set()   # artifact paths already rewarded
         self._tag_hits: set         = set()   # truth IOCs already credited
-        self._episode_reward: float = 0.0
         self._done: bool            = False
         self._last_pivots: list     = []
-        
-        # Attach grader for Phase 2 validator discovery
-        from grader import calculate_final_score
-        self._grader = calculate_final_score
 
     def reset(self) -> StepResult:
         """
@@ -119,13 +102,11 @@ class ShadowRegisterEnv:
         self._state         = copy.deepcopy(self._master_state)
         self._milestones_hit: set = set()
         self._tag_hits: set = set()
-        self._episode_reward: float = 0.0
         self._done          = False
         self._last_pivots   = []     # wipe stale pivots from prior episode
 
         self._obs = ForensicObs(
             current_view=self._welcome_banner(),
-            working_directory="/",
             artifact_metadata=None,
             tagged_evidence={},
             remaining_budget=BUDGET_MAX,
@@ -163,7 +144,6 @@ class ShadowRegisterEnv:
         # ----- budget tick --------------------------------------------
         self._obs = ForensicObs(
             current_view=view[:READ_WINDOW],
-            working_directory=self._obs.working_directory,
             artifact_metadata=meta,
             tagged_evidence=dict(self._obs.tagged_evidence),
             remaining_budget=self._obs.remaining_budget - 1,
@@ -172,7 +152,6 @@ class ShadowRegisterEnv:
 
         # ----- analytical cost ----------------------------------------
         total_reward = step_reward + REWARD_STEP_COST
-        self._episode_reward += total_reward
 
         # ----- termination checks -------------------------------------
         if self._obs.remaining_budget <= 0:
@@ -188,7 +167,6 @@ class ShadowRegisterEnv:
             observation=self._obs,
             reward=total_reward,
             done=self._done,
-            info={"episode_reward_so_far": self._episode_reward},
         )
 
     def step_rejected(self, reason: str) -> StepResult:
@@ -211,7 +189,6 @@ class ShadowRegisterEnv:
                "last_action_log":  reason,
                "remaining_budget": max(self._obs.remaining_budget - 1, 0)}
         )
-        self._episode_reward += REWARD_STEP_COST
         if self._obs.remaining_budget <= 0:
             self._done = True
         return StepResult(
@@ -244,35 +221,25 @@ class ShadowRegisterEnv:
             return 0.0, "ERROR: Search requires a non-empty query.", None, "Search failed: empty query."
 
         pattern = re.compile(re.escape(query), re.IGNORECASE)
-        results: list[SearchResult] = []
+        results = []
 
         for path, vf in self._state.filesystem.items():
-            matches = pattern.findall(vf.content)
-            if matches:
+            hits = len(pattern.findall(vf.content))
+            if hits:
                 # Relevance: hits / total lines — noisy files score low
                 line_count = max(vf.content.count("\n"), 1)
-                relevance  = round(min(len(matches) / line_count, 1.0), 3)
-                results.append(
-                    SearchResult(
-                        filename=path,
-                        hit_count=len(matches),
-                        relevance_score=relevance,
-                    )
-                )
+                results.append((round(min(hits / line_count, 1.0), 3), hits, path))
 
         if not results:
             view = f'SEARCH "{query}": 0 results.'
             return 0.0, view, None, f'Search "{query}" returned no hits.'
 
-        # Sort by relevance descending
-        results.sort(key=lambda r: r.relevance_score, reverse=True)
-
-        lines = [f'SEARCH "{query}": {len(results)} file(s) matched.\n']
-        lines += [
-            f"  {r.filename}  hits={r.hit_count}  relevance={r.relevance_score:.3f}"
-            for r in results
-        ]
-        view = "\n".join(lines)
+        results.sort(reverse=True)     # by relevance descending
+        view = "\n".join(
+            [f'SEARCH "{query}": {len(results)} file(s) matched.\n']
+            + [f"  {path}  hits={hits}  relevance={rel:.3f}"
+               for rel, hits, path in results]
+        )
         log  = f'Search "{query}": {len(results)} hits.'
         return 0.0, view, None, log
 
@@ -430,7 +397,7 @@ class ShadowRegisterEnv:
         # remaining_budget is decremented in step() AFTER the handler returns,
         # so we subtract 1 here to reflect the post-submit state.
         remaining_after = max(self._obs.remaining_budget - 1, 0)
-        report = self._grader(
+        report = calculate_final_score(
             pivots=pivots,
             truth=self._state.truth_dag,
             remaining_budget=remaining_after,
@@ -484,22 +451,4 @@ class ShadowRegisterEnv:
     @property
     def last_pivots(self) -> list[ForensicPivot]:
         """Retrieve the pivots from the most recent SubmitCase action."""
-        return getattr(self, "_last_pivots", [])
-
-    @property
-    def grader(self):
-        """
-        Expose the grader function attached to this environment.
-        
-        Required by Phase 2 OpenEnv validators to verify grader is available.
-        Returns the calculate_final_score function from grader module.
-        
-        Usage
-        -----
-            report = env.grader(
-                pivots=pivots,
-                truth=env.state().truth_dag,
-                remaining_budget=50
-            )
-        """
-        return getattr(self, "_grader", None)
+        return self._last_pivots
